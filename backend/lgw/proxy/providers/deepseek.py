@@ -1,5 +1,10 @@
 """DeepSeek request rewriting and usage parsing."""
 
+import logging
+from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
 
 class UsageParseError(Exception):
     """A usage object was present but did not match the expected fields."""
@@ -112,6 +117,92 @@ def parse_usage(usage):
     except (KeyError, TypeError, ValueError) as exc:
         raise UsageParseError("usage fields are invalid") from exc
     return input_tokens, output_tokens, cache_hit_tokens
+
+
+@dataclass
+class ChunkNotes:
+    """Usage and output text seen while a stream is forwarded."""
+
+    usage: tuple | None = None
+    parts: list = field(default_factory=list)
+
+
+def note_payload(notes, payload):
+    """Record usage and delta text from one chat chunk.
+
+    A null ``usage`` does not clear a value already saved. Unexpected
+    shapes are logged and ignored so forwarding can continue.
+
+    Parameters
+    ----------
+    notes : ChunkNotes
+        Accumulator for this request.
+    payload : dict
+        Parsed JSON object from one ``data`` event.
+    """
+    _note_usage(notes, payload)
+    _note_deltas(notes, payload)
+
+
+def _note_usage(notes, payload):
+    if "usage" not in payload or payload["usage"] is None:
+        return
+    try:
+        parsed = parse_usage(payload["usage"])
+    except UsageParseError:
+        logger.warning("sse usage could not be parsed")
+        return
+    if parsed is not None:
+        notes.usage = parsed
+
+
+def _note_deltas(notes, payload):
+    choices = payload.get("choices")
+    if choices is None:
+        return
+    if not isinstance(choices, list):
+        logger.warning("sse choices is not a list")
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
+            logger.warning("sse choice is not an object")
+            continue
+        delta = choice.get("delta")
+        if delta is None:
+            continue
+        if not isinstance(delta, dict):
+            logger.warning("sse delta is not an object")
+            continue
+        _append_text(notes, delta.get("content"))
+        _append_text(notes, delta.get("reasoning_content"))
+        _append_tool_calls(notes, delta.get("tool_calls"))
+
+
+def _append_text(notes, value):
+    if isinstance(value, str):
+        notes.parts.append(value)
+    elif value is not None:
+        logger.warning("sse text delta is not a string")
+
+
+def _append_tool_calls(notes, tool_calls):
+    if tool_calls is None:
+        return
+    if not isinstance(tool_calls, list):
+        logger.warning("sse tool_calls is not a list")
+        return
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            logger.warning("sse tool call is not an object")
+            continue
+        function = call.get("function")
+        if function is None:
+            continue
+        if not isinstance(function, dict):
+            logger.warning("sse function is not an object")
+            continue
+        _append_text(notes, function.get("name"))
+        _append_text(notes, function.get("arguments"))
 
 
 def _token_count(value):

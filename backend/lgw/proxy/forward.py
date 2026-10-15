@@ -36,10 +36,9 @@ _CONNECT_TIMEOUTS = (httpx.ConnectTimeout, httpx.WriteTimeout)
 
 
 def forward_chat(api_key):
-    """Validate the chat request and forward it when it is not a stream.
+    """Validate the chat request and forward it.
 
-    Streaming is rejected until the streaming path is in place. Invalid
-    bodies are rejected before a request record is inserted.
+    Invalid bodies are rejected before a request record is inserted.
 
     Parameters
     ----------
@@ -61,13 +60,6 @@ def forward_chat(api_key):
         or len(model) > MODEL_MAX_LENGTH
     ):
         return invalid_model()
-    if body.get("stream") is True:
-        return error_response(
-            "not implemented",
-            "gateway_error",
-            "not_implemented",
-            501,
-        )
     provider = current_app.extensions["lgw_provider"]
     sessions = current_app.extensions["lgw_sessions"]
     try:
@@ -80,9 +72,13 @@ def forward_chat(api_key):
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("failed to insert request")
         return gateway_error_response()
-    outcome, client_response = _call_upstream(
-        record_id, api_key, provider, body
-    )
+    stream = body.get("stream") is True
+    result = _call_upstream(record_id, api_key, provider, body, stream)
+    if isinstance(result[0], str):
+        from lgw.proxy.streaming import streaming_response
+
+        return streaming_response(sessions, record_id, result[1], body)
+    outcome, client_response = result
     finish_request(sessions, record_id, outcome)
     return client_response
 
@@ -97,9 +93,9 @@ def _json_object():
     return body
 
 
-def _call_upstream(record_id, api_key, provider, body):
+def _call_upstream(record_id, api_key, provider, body, stream):
     payload = rewrite_body(body, api_key.user_sub)
-    headers = outbound_headers(provider.api_key, request.headers, False)
+    headers = outbound_headers(provider.api_key, request.headers, stream)
     client = current_app.extensions["lgw_http"]
     upstream_request = client.build_request(
         "POST",
@@ -111,6 +107,8 @@ def _call_upstream(record_id, api_key, provider, body):
         upstream = client.send(upstream_request, stream=True)
     except httpx.RequestError as exc:
         return _send_failure(exc, body)
+    if stream and upstream.status_code == 200:
+        return "live", upstream
     try:
         return _consume(record_id, upstream, body)
     except Exception:  # pylint: disable=broad-exception-caught

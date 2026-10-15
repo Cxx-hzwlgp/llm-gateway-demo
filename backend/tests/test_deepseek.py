@@ -3,7 +3,9 @@
 import pytest
 
 from lgw.proxy.providers.deepseek import (
+    ChunkNotes,
     UsageParseError,
+    note_payload,
     outbound_headers,
     parse_usage,
     rewrite_body,
@@ -48,6 +50,72 @@ def test_usage_mapping():
     }
     assert parse_usage(usage) == (11, 7, 3)
     assert parse_usage(None) is None
+
+
+def test_null_usage_does_not_replace_a_saved_value():
+    notes = ChunkNotes()
+    note_payload(
+        notes,
+        {
+            "choices": [{"delta": {"content": "hi"}}],
+            "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 1,
+                "prompt_cache_hit_tokens": 2,
+            },
+        },
+    )
+    note_payload(
+        notes,
+        {"choices": [{"delta": {"content": "!"}}], "usage": None},
+    )
+    assert notes.usage == (4, 1, 2)
+    assert notes.parts == ["hi", "!"]
+
+
+def test_tool_call_fragments_are_accumulated():
+    notes = ChunkNotes()
+    note_payload(
+        notes,
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"q"',
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+    note_payload(
+        notes,
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [{"function": {"arguments": ':"x"}'}}]
+                    }
+                }
+            ]
+        },
+    )
+    assert notes.parts == ["lookup", '{"q"', ':"x"}']
+
+
+def test_invalid_payload_shapes_do_not_raise():
+    notes = ChunkNotes()
+    note_payload(notes, {"usage": {"prompt_tokens": "nope"}})
+    note_payload(notes, {"choices": "bad", "usage": None})
+    note_payload(notes, {"choices": [{"delta": {"tool_calls": "bad"}}]})
+    assert notes.usage is None
+    assert notes.parts == []
 
 
 def test_invalid_usage_raises():
