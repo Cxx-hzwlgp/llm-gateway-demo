@@ -154,8 +154,8 @@ def selected_provider(config):
     api_key = spec.get("api_key")
     if not isinstance(base_url, str) or not base_url:
         raise ConfigurationError("provider base_url is required")
-    if not isinstance(api_key, str):
-        raise ConfigurationError("provider api_key must be a string")
+    if not isinstance(api_key, str) or not api_key:
+        raise ConfigurationError("provider api_key is required")
     return ProviderSettings(
         name=name,
         provider_type=spec["type"],

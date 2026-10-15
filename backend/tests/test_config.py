@@ -45,7 +45,7 @@ def test_invalid_provider_config_fails(tmp_path, mutate):
     elif mutate == "base_url":
         config["providers"]["deepseek"]["base_url"] = ""
     elif mutate == "api_key":
-        del config["providers"]["deepseek"]["api_key"]
+        config["providers"]["deepseek"]["api_key"] = ""
     else:
         config["proxy"] = {"upstream_read_timeout": 0}
     with pytest.raises(ConfigurationError):

@@ -25,8 +25,7 @@ cp config.example.json config.json
 
 至少填写：
 
-- `providers.deepseek.api_key`：出站 DeepSeek Key。留空时上游会拒绝，客户端收到 502，
-  不是 401。
+- `providers.deepseek.api_key`：出站 DeepSeek Key。留空时进程启动失败。
 - `providers.deepseek.type` 必须是 `deepseek`。阶段 1 只能配置一个供应商。
 - `database.url` 默认 `sqlite:///lgw.db`，相对当前工作目录。
 
