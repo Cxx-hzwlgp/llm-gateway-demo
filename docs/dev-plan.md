@@ -9,11 +9,11 @@
 - 管理员（Keycloak groups 包含配置的 `admin_group`）可查看所有用户的 Key 和用量，并停用 Key。
 - 转发模块认证 lgw Key 后转发请求，只统计 Token（总输入、总输出、缓存命中），不限额、不计费、
 不保存请求内容。
-- 上游：DeepSeek `/chat/completions`（第一阶段），AWS Bedrock（第四阶段）。
+- 上游：DeepSeek `/chat/completions`（第一阶段），AWS Bedrock（第三阶段）。
 - 支持查询用量：按时间范围、一组 Key、一组供应商、一组模型筛选，条件可任意组合；结果可按天、
   Key、供应商、模型分组。
 
-## 已确认的技术决策
+## 技术决策
 
 
 | 项目     | 决策                                                                        |
@@ -25,7 +25,7 @@
 | 工具     | uv + `pyproject.toml`，ruff（格式化、PEP8、import 排序、numpy docstring），pylint     |
 | 规范     | PEP8，行宽 79，docstring 采用 numpy 格式，提交信息遵循 Conventional Commits              |
 | 前端     | Vue 3 + Vite + TypeScript + Element Plus                                  |
-| 数据库    | SQLAlchemy 2.0；阶段 1、2 用 SQLite（WAL），阶段 3 切换集群数据库                          |
+| 数据库    | SQLAlchemy 2.0；阶段 1–3 用 SQLite（WAL），阶段 4 切换集群 PostgreSQL（psycopg 3）+ Alembic |
 | Python | 3.12（与 Docker 镜像一致）                                                       |
 
 
@@ -47,7 +47,7 @@ backend/
 │       └── estimate.py      # 中断时的 Token 估算
 └── tests/
 frontend/                    # 阶段 2 初始化
-deploy/                      # 阶段 3：Dockerfile、k8s 清单
+deploy/                      # 阶段 4：Dockerfile、k8s 清单
 ```
 
 不自建 Nginx，也不引入新的网络组件。admin、proxy 各用一个 ClusterIP Service，通过公司已有的
@@ -57,10 +57,11 @@ Ingress Controller 暴露，TLS 由 cert-manager 签发：
   开发时由 Vite dev server 把 `/api` 代理到 admin。
 - proxy app 通过 Ingress 对外提供 `/v1/`。调用方是 SDK / curl 等非浏览器客户端，
   不涉及 CORS 和 cookie。
-- Ingress Controller 为 k8s 社区的 Ingress-Nginx（`ingressClassName: nginx`），仍是 SSE 链路上
-  的一层反向代理，proxy 的 Ingress 需要单独配置注解（见阶段 3）。
+- Ingress Controller 为 k8s 社区的 Ingress-Nginx（`ingressClassName: nginx`，不是 nginx 社区的
+  NGINX Ingress Controller，注解按前者文档编写），仍是 SSE 链路上的一层反向代理，proxy 的
+  Ingress 需要单独配置注解（见阶段 4）。
 
-## 数据模型（相对笔记的调整需确认）
+## 数据模型
 
 
 | 表          | 列                                                                                                                                                 |
@@ -70,7 +71,7 @@ Ingress Controller 暴露，TLS 由 cert-manager 签发：
 | `requests` | `id` (PK), `key_id`, `provider`, `model`, `started_at`, `ended_at`, `status`, `usage_source`, `input_tokens`, `output_tokens`, `cache_hit_tokens` |
 
 
-相对笔记新增的列：
+相对需求笔记新增的列：
 
 - `api_keys.name`、`key_hint`：界面要求展示 Key 名称和掩码文本（如 `lgw-ab12…yz89`）。
 - `requests.ended_at`、`provider`、`model`：区分上游和模型，便于排查与按模型统计。
@@ -98,7 +99,7 @@ Token 列的语义由 lgw 定义，与上游无关，每个 provider 的解析�
 
 DeepSeek 的 `prompt_tokens` 已包含缓存命中，可直接作为 `input_tokens`。Bedrock Converse 的
 `inputTokens` 据了解不含 `cacheReadInputTokens` / `cacheWriteInputTokens`，需要相加，
-阶段 4 按官方文档核实。
+阶段 3 按官方文档核实。
 
 Key 格式为 `lgw-` + `secrets.token_urlsafe(32)`，库中只存 SHA-256。Key 为高熵随机串，
 不需要 bcrypt 这类慢哈希，认证时可直接按哈希索引查询。
@@ -124,7 +125,7 @@ Key 格式为 `lgw-` + `secrets.token_urlsafe(32)`，库中只存 SHA-256。Key 
   不缓存认证结果，停用对新请求立即生效。以后如需引入缓存，先确定可接受的停用生效延迟。
 7. **gevent 约束**：每个 worker 是单线程多协程，只在 IO 等待时切换。CPU 密集操作（如
   Token 估算）会阻塞同 worker 的所有请求，阶段 1 需实测耗时；数据库驱动必须兼容 monkey
-   patch，阶段 3 选用 PyMySQL 或 psycopg 3，避免 `mysqlclient` 等 C 驱动。
+   patch，阶段 4 选用 psycopg 3，避免 `psycopg2` 这类会阻塞整个 worker 的驱动。
 8. **错误转发**：proxy 错误响应采用 OpenAI 格式 `{"error": {...}}`，保证 SDK 能正确抛出异常
   （admin API 仍用 `{"message": ...}`）。上游 401 / 403 / 402 是网关出站 Key 或账户的问题，
   不能原样转发，否则客户端会误以为自己的 lgw Key 失效；这类错误转为 502 并记录日志。
@@ -138,7 +139,7 @@ Key 格式为 `lgw-` + `secrets.token_urlsafe(32)`，库中只存 SHA-256。Key 
 
 ## 阶段计划
 
-### 阶段 0：脚手架（当前）
+### 阶段 0：脚手架（已完成）
 
 - [x] 目录结构、`pyproject.toml`、ruff / pylint 配置、配置模板、两个 app 的健康检查
 - [x] 首次提交
@@ -150,8 +151,8 @@ gunicorn gevent worker 启动。
 
 详细计划见 [stage1-plan.md](stage1-plan.md)。
 
-1. `db.py`、`models.py`、`keys.py`，提供 CLI：`flask --app ... init-db`、`create-key`（临时，
-  在没有登录前用于发 Key）。
+1. `db.py`、`models.py`、`keys.py`，提供 CLI：`flask --app ... init-db`、`create-key`（登录
+  完成前用于发 Key，之后保留为运维工具）。
 2. proxy：`POST /v1/chat/completions`（流式与非流式）、`GET /v1/models` 透传。
 3. DeepSeek provider：请求改写、usage 解析。
 4. 中断估算与超时清扫命令。
@@ -179,9 +180,22 @@ gunicorn gevent worker 启动。
 验收：用测试 Keycloak 登录，完成创建 Key、调用、查询用量全流程；普通用户无法访问
 其他用户数据。
 
-### 阶段 3：真实数据库和部署
+### 阶段 3：AWS Bedrock
 
-1. 切换到集群 PostgreSQL 或 MySQL，引入 Alembic 管理表结构。
+先调研再定方案：客户端以何种协议访问（OpenAI 兼容格式由网关翻译为 Converse，或透传
+Bedrock 原生接口），以及流式响应中 usage 的获取方式。中断时的估算沿用通用分词器。
+
+- 确定多个供应商时的路由方式（按模型名映射还是按路径区分），路由结果决定
+  `requests.provider`，客户端不能直接指定供应商名以外的上游信息。
+- 优先选择不需要协议翻译的方案。跨协议翻译要处理消息、工具调用、推理内容、结束原因和
+  流式事件，不只是字段改名，出错时请求往往仍能成功，只是工具调用或 usage 悄悄出错。
+- 访问 Bedrock 原生接口需要 SigV4 签名，交给 AWS SDK 完成，不自行拼接或修改已签名的请求。
+- 验收覆盖：普通 / 流式请求、usage 映射（含缓存字段，按上文 Token 语义）、客户端断开、
+  上游 400 / 429 / 5xx、工具调用（流式与非流式）、上游长时间无数据。
+
+### 阶段 4：真实数据库和部署
+
+1. 切换到集群 PostgreSQL，引入 Alembic 管理表结构。
 2. `deploy/`：Dockerfile（多阶段构建：先构建前端，产物打入后端镜像；admin / proxy 同一镜像
   不同启动命令）、gunicorn 配置（`graceful_timeout` 接近最大请求时长，避免滚动更新截断流）、
   k8s Deployment、ClusterIP Service、Ingress、Secret（config.json）、清扫 CronJob。
@@ -200,33 +214,19 @@ gunicorn gevent worker 启动。
   - 不使用 `configuration-snippet` 等 snippet 注解（新版 Controller 默认禁用）。
   - 客户端断开传递：nginx 默认 `proxy_ignore_client_abort off`，客户端断开时会关闭到后端的
     连接，部署后需实测确认 `client_interrupted` 能被正确记录。
-4. 从 HPC 环境用真实客户端验证。
+4. 本机 WSL 手动部署验证：
+  给出手动部署操作手册，人工部署验收。
+  用本机 Docker 构建镜像，加载到本机 kind 集群，
+  在 kind 中安装 Ingress-Nginx、cert-manager（自签名 ClusterIssuer）和 PostgreSQL，
+  使用与公司集群相同的清单，只替换镜像地址、域名、issuer 名称等环境相关的值。验证项：
+  - Alembic 在空库上建表成功，生成的表结构与 `models.py` 一致。
+  - 经 Ingress 完成登录、创建 Key、调用 DeepSeek 与 Bedrock（普通与流式）、查询用量全流程。
+  - 流式响应经 Ingress 逐事件送达，不被缓冲；超过 60 秒的请求不被截断。
+  - 客户端断开经 Ingress 传递到 proxy，记录为 `client_interrupted`。
+  - 滚动更新 proxy 时，在途的流式请求正常完成。
+  - 清扫 CronJob 按时运行，超时的 `in_progress` 记录被正确标记。
+5. 本机验证通过后，部署到公司 k8s，从 HPC 环境用真实客户端重复上述调用和断开验证。
 
-验收：k8s 上部署成功，HPC 通过 lgw 调用 DeepSeek，用量正确入库。
-
-### 阶段 4：AWS Bedrock
-
-先调研再定方案：客户端以何种协议访问（OpenAI 兼容格式由网关翻译为 Converse，或透传
-Bedrock 原生接口），以及流式响应中 usage 的获取方式。中断时的估算沿用通用分词器。
-
-- 确定多个供应商时的路由方式（按模型名映射还是按路径区分），路由结果决定
-  `requests.provider`，客户端不能直接指定供应商名以外的上游信息。
-- 优先选择不需要协议翻译的方案。跨协议翻译要处理消息、工具调用、推理内容、结束原因和
-  流式事件，不只是字段改名，出错时请求往往仍能成功，只是工具调用或 usage 悄悄出错。
-- 访问 Bedrock 原生接口需要 SigV4 签名，交给 AWS SDK 完成，不自行拼接或修改已签名的请求。
-- 验收覆盖：普通 / 流式请求、usage 映射（含缓存字段，按上文 Token 语义）、客户端断开、
-  上游 400 / 429 / 5xx、工具调用（流式与非流式）、上游长时间无数据。
-
-## 待确认问题
-
-1. 上述数据模型新增列是否接受。—— 接受
-2. 阶段 2 需要一个可用的测试 Keycloak realm / client（本机没有 Docker，无法本地起 Keycloak）。—— 在 wsl 开发，环境已足够
-3. 阶段 3 使用 PostgreSQL 还是 MySQL。—— PostgreSQL 
-4. Bedrock 客户端侧使用的协议（影响阶段 4 方案）。—— 待定
-5. 去掉 Nginx 后，k8s 中 admin / proxy 通过什么方式对外暴露，是否需要 TLS。—— 使用公司已有
-   Ingress Controller，两个应用各用 ClusterIP Service，通过 Ingress 暴露，TLS 由 cert-manager
-   处理；demo 阶段不引入新的网络组件。
-6. 公司 Ingress Controller 的类型（ingress-nginx、Traefik 等），决定关闭缓冲、读超时等
-   注解的写法（阶段 3 前确认）。—— k8s 社区的 Ingress-Nginx Controller（非 nginx 社区的
-   NGINX Ingress Controller），`spec.ingressClassName: nginx`，按其文档添加注解。
+验收：WSL kind 集群上全部验证项通过；公司 k8s 上部署成功，HPC 通过 lgw 调用 DeepSeek 和
+Bedrock，用量正确入库。
 

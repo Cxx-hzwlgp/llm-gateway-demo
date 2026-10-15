@@ -1,7 +1,6 @@
 # 阶段 1 开发计划：本地转发和记录（SQLite）
 
-总体范围和设计决策见 [dev-plan.md](dev-plan.md)。本文件细化阶段 1 的实现方案，审查通过后再开工。
-审查中已确认的决策见文末「已确认问题」。
+总体范围和设计决策见 [dev-plan.md](dev-plan.md)。本文件细化阶段 1 的实现方案。
 
 ## 目标
 
@@ -44,7 +43,7 @@ lgw Key 认证通过后，把 OpenAI 兼容请求转发到 DeepSeek，支持流�
 - `providers` 的键名是供应商名，写入 `requests.provider`；`type` 决定使用的适配器
   （阶段 1 只有 `deepseek`）。规则见 dev-plan 数据模型。
 - 阶段 1 只支持配置一个供应商，`create_app` 校验：数量不为 1、名称不符合格式或 `type` 未知时
-  启动失败。多个供应商时如何路由（按模型名还是按路径）在阶段 4 决定。
+  启动失败。多个供应商时如何路由（按模型名还是按路径）在阶段 3 决定。
 
 - `upstream_read_timeout` 是两次读取之间的最大间隔，不是整个请求的时长。DeepSeek 在排队
   时会发送 keep-alive（流式为 `: keep-alive` 注释，非流式为空行），会重置该计时；排队超过
@@ -76,7 +75,7 @@ lgw/
 
 ## 数据库与 CLI
 
-- 表结构按 dev-plan 数据模型。阶段 1 用 `Base.metadata.create_all` 建表，阶段 3 再引入 Alembic。
+- 表结构按 dev-plan 数据模型。阶段 1 用 `Base.metadata.create_all` 建表，阶段 4 再引入 Alembic。
 - 每次读写使用短生命周期 session（`with Session(engine) as session:`），不跨协程共享。
 - SQLite 开启 WAL 和 `busy_timeout`，支持多个 gunicorn worker 并发写入。
 - CLI（`flask --app lgw.proxy ...`）：
@@ -85,7 +84,7 @@ lgw/
     打印完整 Key（只打印这一次）。`sub` 会作为 DeepSeek `user_id` 发送，创建用户时校验其匹配
     `[a-zA-Z0-9\-_]+` 且长度不超过 512。登录功能完成后此命令保留为运维工具。
   - `sweep`：把 `in_progress` 且 `started_at` 超过 `max_request_seconds` 的记录标为
-    `gateway_error` + `unknown`。阶段 1 手动执行，阶段 3 用 CronJob。
+    `gateway_error` + `unknown`。阶段 1 手动执行，阶段 4 用 CronJob。
 
 ## 请求处理流程
 
@@ -127,6 +126,8 @@ lgw/
 读完整响应体，解析 `usage`，更新记录为 `completed` + `reported`，返回原始响应体和状态码。
 响应体前可能有 keep-alive 空行，`json.loads` 会忽略首尾空白，无需特殊处理。
 响应体不是合法 JSON 或缺少 `usage` 时仍原样返回，记录为 `completed` + `estimated`，记 warning。
+上游完成前不向客户端输出任何内容（包括 keep-alive 空行），长时间排队时客户端或中间代理可能
+超时；阶段 1 实测后再决定是否改为边收边转发。
 
 usage 字段映射（流式相同）：
 
@@ -309,7 +310,8 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 2. 对真实 DeepSeek 手动验证：正常、客户端断开（Ctrl+C）、出站 Key 填错（客户端收到 502
    而不是 401）；抽查一次流式响应，确认 usage 位置与文档一致。
 3. 上述集成测试全部通过；`ruff format --check`、`ruff check`、`pylint` 通过。
-4. 记录实测结论：SDK 对错误事件的行为、客户端断开的感知延迟、估算耗时。结论回填到本文件。
+4. 记录实测结论：SDK 对错误事件的行为、客户端断开的感知延迟、估算耗时、非流式长时间排队
+   时客户端是否超时。结论回填到本文件。
 5. 编写临时手册 `docs/stage1-manual.md`，指导从零开始：安装依赖、填写 `config.json`、
    `init-db`、`create-key`、用 gunicorn 启动 proxy、用 curl / OpenAI SDK 验证、配置 Pi 和
    Cline（OpenAI 兼容 provider 的 base URL、Key、模型名）、用 `sqlite3` 查看 `requests`
@@ -328,15 +330,3 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 6. `feat(proxy): add models passthrough and sweep command`
 7. `test(proxy): add integration tests with fake upstream`
 8. `docs: add stage 1 setup and testing manual`
-
-## 已确认问题
-
-1. 是否新增 `requests.status = upstream_error`（上游返回非 200，Token 记 0）。—— 新增
-2. 上游 402（余额不足）是否和 401 / 403 一样转为 502。—— 是
-3. 分词器文件是否提交到仓库。—— 不提交。需要估算的模型不止 DeepSeek，场景少且准确度要求
-   不高，改用通用分词器（`tiktoken` `o200k_base`）估算所有模型，接受可能不准确。
-4. `upstream_read_timeout` 默认 120 秒、`max_request_seconds` 默认 30 分钟是否合适。—— 先用
-   默认值，出现问题再调整。
-5. `usage_source = unknown` 时 Token 列记 0 还是 NULL。—— 记 0，由 `usage_source` 区分。
-6. 非流式是否边收边转发上游字节（含 keep-alive 空行），避免排队期间客户端或中间代理超时。
-   —— 保持完整读取后返回；阶段 1 实测长时间排队的情况后再决定。
