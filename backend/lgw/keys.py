@@ -6,6 +6,7 @@ import secrets
 
 KEY_PREFIX = "lgw-"
 SUB_MAX_LENGTH = 512
+KEY_MAX_LENGTH = 128
 _HINT_EDGE = 4
 _SECRET_RE = re.compile(r"[A-Za-z0-9_-]+")
 _SUB_RE = re.compile(r"[a-zA-Z0-9_-]+")
@@ -71,10 +72,14 @@ def is_key_format(api_key):
     Returns
     -------
     bool
-        True when the key has the ``lgw-`` prefix and a URL-safe secret
-        long enough to build a hint.
+        True when the key has the ``lgw-`` prefix, a URL-safe secret
+        long enough to build a hint, and is at most 128 characters.
     """
-    if not isinstance(api_key, str) or not api_key.startswith(KEY_PREFIX):
+    if (
+        not isinstance(api_key, str)
+        or len(api_key) > KEY_MAX_LENGTH
+        or not api_key.startswith(KEY_PREFIX)
+    ):
         return False
     secret = api_key[len(KEY_PREFIX) :]
     if len(secret) < _HINT_EDGE * 2:

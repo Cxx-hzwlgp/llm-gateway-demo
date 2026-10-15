@@ -7,7 +7,7 @@ from datetime import timedelta
 from flask import current_app, request
 from sqlalchemy import select
 
-from lgw.keys import hash_key
+from lgw.keys import hash_key, is_key_format
 from lgw.models import ApiKey, KeyStatus, ensure_utc, utcnow
 from lgw.proxy.errors import invalid_api_key
 
@@ -36,7 +36,7 @@ def authenticate():
         The authenticated key, or a Flask 401 response tuple.
     """
     token = _bearer_token()
-    if token is None:
+    if token is None or not is_key_format(token):
         return invalid_api_key()
     sessions = current_app.extensions["lgw_sessions"]
     with sessions() as session:

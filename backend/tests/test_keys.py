@@ -31,6 +31,7 @@ def test_key_format_rejects_short_or_foreign_keys():
     assert not is_key_format("sk-12345678")
     assert not is_key_format("lgw-short")
     assert not is_key_format("lgw-has space-xxxx")
+    assert not is_key_format("lgw-" + ("a" * 200))
     assert not is_key_format(None)
 
 
