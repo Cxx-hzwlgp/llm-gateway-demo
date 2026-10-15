@@ -15,6 +15,7 @@ from lgw.proxy.errors import (
     invalid_model,
     passthrough_headers,
 )
+from lgw.proxy.estimate import estimate_tokens, output_text_from_response
 from lgw.proxy.providers.deepseek import (
     UsageParseError,
     chat_completions_url,
@@ -228,6 +229,5 @@ def _gateway_outcome():
 
 
 def _estimated_tokens(request_body, response_body):
-    # The shared tokenizer replaces these zeros in a later change.
-    del request_body, response_body
-    return 0, 0, 0
+    output_text = output_text_from_response(response_body)
+    return estimate_tokens(request_body, output_text)

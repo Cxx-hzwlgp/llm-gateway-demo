@@ -11,6 +11,7 @@ from lgw.config import (
     selected_provider,
 )
 from lgw.db import create_engine_from_url, create_session_factory
+from lgw.proxy.estimate import load_encoder
 from lgw.proxy.routes import register_routes
 
 
@@ -38,6 +39,7 @@ def create_app(config=None):
     app.extensions["lgw_provider"] = provider
     app.extensions["lgw_proxy"] = settings
     app.extensions["lgw_http"] = _upstream_client(settings)
+    load_encoder()
     register_cli(app)
     register_routes(app)
 

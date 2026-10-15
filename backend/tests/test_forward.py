@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from lgw.keys import generate_key, hash_key, key_hint
 from lgw.models import ApiKey, KeyStatus, Request, User, utcnow
+from lgw.proxy.estimate import estimate_tokens
 from tests.support import create_proxy_app
 
 _URL = "https://upstream.test/chat/completions"
@@ -115,16 +116,22 @@ def test_nonstream_completion_reports_usage_and_hides_client_headers(tmp_path):
 def test_missing_usage_is_completed_and_estimated(tmp_path, caplog):
     app = create_proxy_app(tmp_path)
     raw_key = _insert_key(app)
+    body = {"model": "m", "messages": [{"role": "user", "content": "hello"}]}
+    upstream = {
+        "choices": [{"message": {"role": "assistant", "content": "world"}}]
+    }
     with respx.mock:
-        respx.post(_URL).mock(
-            return_value=httpx.Response(200, json={"choices": []})
-        )
-        response = _post(app, raw_key, {"model": "m"})
+        respx.post(_URL).mock(return_value=httpx.Response(200, json=upstream))
+        response = _post(app, raw_key, body)
     assert response.status_code == 200
     record = _records(app)[0]
     assert record.status == "completed"
     assert record.usage_source == "estimated"
-    assert record.input_tokens == 0
+    assert (
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_hit_tokens,
+    ) == estimate_tokens(body, "world")
     assert "completed without usage" in caplog.text
     app.extensions["lgw_http"].close()
 
@@ -265,10 +272,16 @@ def test_read_timeout_is_upstream_interrupted(tmp_path):
         return _Slow()
 
     app.extensions["lgw_http"].send = _send
-    response = _post(app, raw_key, {"model": "m"})
+    body = {"model": "m", "messages": [{"role": "user", "content": "hello"}]}
+    response = _post(app, raw_key, body)
     assert response.status_code == 502
     assert response.get_json()["error"]["code"] == "upstream_interrupted"
     record = _records(app)[0]
     assert record.status == "upstream_interrupted"
     assert record.usage_source == "estimated"
+    assert (
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_hit_tokens,
+    ) == estimate_tokens(body, "")
     app.extensions["lgw_http"].close()

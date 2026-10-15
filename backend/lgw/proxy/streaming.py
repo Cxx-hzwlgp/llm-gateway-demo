@@ -8,6 +8,7 @@ import httpx
 from flask import Response
 
 from lgw.models import RequestStatus, UsageSource
+from lgw.proxy.estimate import estimate_tokens
 from lgw.proxy.providers.deepseek import ChunkNotes, note_payload
 from lgw.proxy.recorder import Outcome, finish_request
 from lgw.proxy.sse import parse_event, split_events
@@ -141,6 +142,4 @@ def _outcome(progress, body):
 
 
 def _estimated_tokens(request_body, output_parts):
-    # The shared tokenizer replaces these zeros in a later change.
-    del request_body, output_parts
-    return 0, 0, 0
+    return estimate_tokens(request_body, "".join(output_parts))

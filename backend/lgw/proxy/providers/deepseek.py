@@ -156,6 +156,25 @@ def _note_usage(notes, payload):
         notes.usage = parsed
 
 
+def text_from_delta(delta):
+    """Return the estimable text in one delta or message.
+
+    Parameters
+    ----------
+    delta : dict
+        A stream ``delta`` or a non-streaming ``message``. Both use
+        ``content``, ``reasoning_content`` and ``tool_calls``.
+
+    Returns
+    -------
+    str
+        Concatenated text. Non-text parts are omitted.
+    """
+    notes = ChunkNotes()
+    _note_deltas(notes, {"choices": [{"delta": delta}]})
+    return "".join(notes.parts)
+
+
 def _note_deltas(notes, payload):
     choices = payload.get("choices")
     if choices is None:

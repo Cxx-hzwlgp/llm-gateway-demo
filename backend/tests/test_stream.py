@@ -6,6 +6,7 @@ import httpx
 from sqlalchemy import select
 
 from lgw.models import ApiKey
+from lgw.proxy.estimate import estimate_tokens
 from lgw.proxy.recorder import start_request
 from lgw.proxy.streaming import streaming_response
 from tests.support import create_proxy_app
@@ -121,6 +122,8 @@ def test_stream_without_done_appends_an_error_event(tmp_path):
     record = _records(app)[0]
     assert record.status == "upstream_interrupted"
     assert record.usage_source == "estimated"
+    assert record.output_tokens == estimate_tokens({}, "hi")[1]
+    assert record.cache_hit_tokens == 0
     app.extensions["lgw_http"].close()
 
 
@@ -152,6 +155,8 @@ def test_done_without_usage_is_estimated(tmp_path, caplog):
     record = _records(app)[0]
     assert record.status == "completed"
     assert record.usage_source == "estimated"
+    assert record.output_tokens == estimate_tokens({}, "hi")[1]
+    assert record.cache_hit_tokens == 0
     assert "without usage" in caplog.text
     app.extensions["lgw_http"].close()
 
@@ -186,9 +191,11 @@ def test_client_disconnect_closes_upstream_and_estimates(tmp_path):
             _event({"choices": [{"delta": {"content": " there"}}]}),
         ]
     )
-    response = streaming_response(
-        sessions, record_id, upstream, {"model": "m", "messages": []}
-    )
+    request_body = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    response = streaming_response(sessions, record_id, upstream, request_body)
     generator = response.response
     assert next(generator).startswith(b"data: ")
     generator.close()
@@ -196,6 +203,11 @@ def test_client_disconnect_closes_upstream_and_estimates(tmp_path):
     record = _records(app)[0]
     assert record.status == "client_interrupted"
     assert record.usage_source == "estimated"
+    assert (
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_hit_tokens,
+    ) == estimate_tokens(request_body, "hi")
     app.extensions["lgw_http"].close()
 
 
