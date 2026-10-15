@@ -1,5 +1,6 @@
 """Authenticate a gateway API key on each request."""
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -9,6 +10,8 @@ from sqlalchemy import select
 from lgw.keys import hash_key
 from lgw.models import ApiKey, KeyStatus, ensure_utc, utcnow
 from lgw.proxy.errors import invalid_api_key
+
+logger = logging.getLogger(__name__)
 
 _TOUCH_AFTER = timedelta(minutes=1)
 
@@ -44,8 +47,16 @@ def authenticate():
         identified = AuthenticatedKey(id=api_key.id, user_sub=api_key.user_sub)
         if _due_for_touch(api_key):
             api_key.last_used_at = utcnow()
-            session.commit()
+            _commit_last_used(session, identified.id)
         return identified
+
+
+def _commit_last_used(session, key_id):
+    try:
+        session.commit()
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("failed to update last_used_at for key %s", key_id)
+        session.rollback()
 
 
 def _bearer_token():

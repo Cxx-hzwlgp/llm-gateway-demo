@@ -100,6 +100,36 @@ def test_active_key_is_accepted_and_touched(tmp_path, monkeypatch):
         assert stored.last_used_at.replace(tzinfo=UTC) == _FIXED_NOW
 
 
+def test_last_used_write_failure_still_authenticates(tmp_path, caplog):
+    app = _app(tmp_path)
+    raw_key = _insert_key(app)
+    sessions = app.extensions["lgw_sessions"]
+
+    class _Session:
+        def __enter__(self):
+            self._session = sessions().__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return self._session.__exit__(exc_type, exc, traceback)
+
+        def scalar(self, statement):
+            return self._session.scalar(statement)
+
+        def commit(self):
+            raise RuntimeError("locked")
+
+        def rollback(self):
+            self._session.rollback()
+
+    app.extensions["lgw_sessions"] = _Session
+    with caplog.at_level("ERROR"):
+        response = _post(app, raw_key)
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_json"
+    assert "last_used_at" in caplog.text
+
+
 def test_last_used_at_updates_only_after_one_minute(tmp_path, monkeypatch):
     monkeypatch.setattr("lgw.proxy.auth.utcnow", lambda: _FIXED_NOW)
     app = _app(tmp_path)
