@@ -10,6 +10,22 @@ class UsageParseError(Exception):
     """A usage object was present but did not match the expected fields."""
 
 
+def models_url(base_url):
+    """Return the models URL for ``base_url``.
+
+    Parameters
+    ----------
+    base_url : str
+        Provider base URL without a trailing path.
+
+    Returns
+    -------
+    str
+        Absolute models URL.
+    """
+    return base_url.rstrip("/") + "/models"
+
+
 def chat_completions_url(base_url):
     """Return the chat completions URL for ``base_url``.
 

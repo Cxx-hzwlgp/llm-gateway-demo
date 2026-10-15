@@ -1,10 +1,23 @@
 """Flask CLI commands for the gateway database."""
 
+from datetime import timedelta
+
 import click
 from flask import current_app
+from sqlalchemy import select
 
 from lgw.keys import generate_key, hash_key, key_hint, validate_user_sub
-from lgw.models import ApiKey, Base, KeyStatus, User, utcnow
+from lgw.models import (
+    ApiKey,
+    Base,
+    KeyStatus,
+    Request,
+    RequestStatus,
+    UsageSource,
+    User,
+    ensure_utc,
+    utcnow,
+)
 
 
 def register_cli(app):
@@ -52,3 +65,28 @@ def register_cli(app):
             )
             session.commit()
         click.echo(raw_key)
+
+    @app.cli.command("sweep")
+    def sweep():
+        """Mark stale in-progress requests as gateway errors."""
+        settings = current_app.extensions["lgw_proxy"]
+        cutoff = utcnow() - timedelta(seconds=settings.max_request_seconds)
+        sessions = current_app.extensions["lgw_sessions"]
+        with sessions() as session:
+            statement = select(Request).where(
+                Request.status == RequestStatus.IN_PROGRESS
+            )
+            swept = 0
+            now = utcnow()
+            for row in session.scalars(statement):
+                if ensure_utc(row.started_at) >= cutoff:
+                    continue
+                row.status = RequestStatus.GATEWAY_ERROR
+                row.usage_source = UsageSource.UNKNOWN
+                row.input_tokens = 0
+                row.output_tokens = 0
+                row.cache_hit_tokens = 0
+                row.ended_at = now
+                swept += 1
+            session.commit()
+        click.echo(f"swept {swept} requests")

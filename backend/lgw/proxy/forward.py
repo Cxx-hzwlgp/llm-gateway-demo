@@ -19,6 +19,7 @@ from lgw.proxy.estimate import estimate_tokens, output_text_from_response
 from lgw.proxy.providers.deepseek import (
     UsageParseError,
     chat_completions_url,
+    models_url,
     outbound_headers,
     parse_usage,
     rewrite_body,
@@ -226,6 +227,42 @@ def _interrupted(body):
 
 def _gateway_outcome():
     return Outcome(RequestStatus.GATEWAY_ERROR, UsageSource.UNKNOWN, 0, 0, 0)
+
+
+def forward_models():
+    """Forward ``GET /v1/models`` without writing a request record.
+
+    Returns
+    -------
+    flask.Response or tuple
+        Upstream body on success, or a mapped error response.
+    """
+    provider = current_app.extensions["lgw_provider"]
+    client = current_app.extensions["lgw_http"]
+    headers = {"Authorization": f"Bearer {provider.api_key}"}
+    accept = request.headers.get("Accept")
+    if accept:
+        headers["Accept"] = accept
+    upstream_request = client.build_request(
+        "GET", models_url(provider.base_url), headers=headers
+    )
+    try:
+        upstream = client.send(upstream_request, stream=True)
+    except httpx.RequestError as exc:
+        return _send_failure(exc, {})[1]
+    try:
+        try:
+            payload = upstream.read()
+        except _READ_ERRORS:
+            return _interrupted(b"")[1]
+    finally:
+        upstream.close()
+    if upstream.status_code != 200:
+        return _upstream_status("models", upstream, payload)[1]
+    content_type = upstream.headers.get("content-type", "application/json")
+    return Response(
+        payload, status=200, headers={"Content-Type": content_type}
+    )
 
 
 def _estimated_tokens(request_body, response_body):
