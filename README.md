@@ -5,12 +5,12 @@ LLM 网关 demo：为 HPC 用户转发 DeepSeek 等模型 API 请求，提供 Ke
 
 ## 本地开发
 
-```powershell
+```bash
 cd backend
 uv sync
-Copy-Item config.example.json config.json   # 按需填写
-uv run python serve.py admin   # http://127.0.0.1:5000
-uv run python serve.py proxy   # http://127.0.0.1:8000
+cp config.example.json config.json   # 按需填写
+uv run gunicorn -k gevent -b 127.0.0.1:5000 'lgw.admin:create_app()'
+uv run gunicorn -k gevent -b 127.0.0.1:8000 'lgw.proxy:create_app()'
 ```
 
 配置文件路径可通过环境变量 `CONFIG_FILE_PATH` 指定，默认 `config.json`。
@@ -20,10 +20,10 @@ uv run python serve.py proxy   # http://127.0.0.1:8000
 - PEP8，行宽 79；docstring 使用 numpy 格式。
 - 提交前运行：
 
-  ```powershell
+  ```bash
   uv run ruff format .
   uv run ruff check .
-  uv run pylint lgw serve.py
+  uv run pylint lgw
   uv run pytest
   ```
 
