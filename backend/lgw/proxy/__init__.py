@@ -5,6 +5,7 @@ from flask import Flask
 from lgw.cli import register_cli
 from lgw.config import database_url, load_config
 from lgw.db import create_engine_from_url, create_session_factory
+from lgw.proxy.routes import register_routes
 
 
 def create_app(config=None):
@@ -26,6 +27,7 @@ def create_app(config=None):
     app.extensions["lgw_engine"] = engine
     app.extensions["lgw_sessions"] = create_session_factory(engine)
     register_cli(app)
+    register_routes(app)
 
     @app.get("/healthz")
     def healthz():
