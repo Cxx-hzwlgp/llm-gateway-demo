@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import click
 from flask import current_app
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from lgw.keys import generate_key, hash_key, key_hint, validate_user_sub
 from lgw.models import (
@@ -18,6 +18,47 @@ from lgw.models import (
     ensure_utc,
     utcnow,
 )
+
+
+def _mark_stale(session, stale_ids, now):
+    """Mark rows that are still in progress.
+
+    The status check is part of the UPDATE, so a request that finished
+    after it was selected is left unchanged.
+
+    Parameters
+    ----------
+    session : sqlalchemy.orm.Session
+        Open session.
+    stale_ids : list of int
+        Request ids whose start time is past the cutoff.
+    now : datetime.datetime
+        Time stored in ``ended_at``.
+
+    Returns
+    -------
+    int
+        Number of rows updated.
+    """
+    if not stale_ids:
+        return 0
+    result = session.execute(
+        update(Request)
+        .where(
+            Request.id.in_(stale_ids),
+            Request.status == RequestStatus.IN_PROGRESS,
+        )
+        .values(
+            status=RequestStatus.GATEWAY_ERROR,
+            usage_source=UsageSource.UNKNOWN,
+            input_tokens=0,
+            output_tokens=0,
+            cache_hit_tokens=0,
+            ended_at=now,
+        )
+    )
+    session.commit()
+    return result.rowcount
 
 
 def register_cli(app):
@@ -76,17 +117,10 @@ def register_cli(app):
             statement = select(Request).where(
                 Request.status == RequestStatus.IN_PROGRESS
             )
-            swept = 0
-            now = utcnow()
-            for row in session.scalars(statement):
-                if ensure_utc(row.started_at) >= cutoff:
-                    continue
-                row.status = RequestStatus.GATEWAY_ERROR
-                row.usage_source = UsageSource.UNKNOWN
-                row.input_tokens = 0
-                row.output_tokens = 0
-                row.cache_hit_tokens = 0
-                row.ended_at = now
-                swept += 1
-            session.commit()
+            stale_ids = [
+                row.id
+                for row in session.scalars(statement)
+                if ensure_utc(row.started_at) < cutoff
+            ]
+            swept = _mark_stale(session, stale_ids, utcnow())
         click.echo(f"swept {swept} requests")

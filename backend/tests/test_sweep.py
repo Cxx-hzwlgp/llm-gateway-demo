@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
+from lgw.cli import _mark_stale
 from lgw.models import (
     ApiKey,
     Base,
@@ -60,6 +61,34 @@ def test_sweep_marks_only_stale_in_progress(tmp_path):
     assert rows[0].ended_at is not None
     assert rows[1].status == RequestStatus.IN_PROGRESS
     assert rows[2].status == RequestStatus.COMPLETED
+    app.extensions["lgw_http"].close()
+
+
+def test_mark_stale_skips_rows_that_already_finished(tmp_path):
+    config = proxy_config(f"sqlite:///{tmp_path / 'lgw.db'}")
+    app = create_app(config)
+    Base.metadata.create_all(app.extensions["lgw_engine"])
+    _insert_key(app)
+    sessions = app.extensions["lgw_sessions"]
+    now = utcnow()
+    with sessions() as session:
+        key_id = session.scalars(select(ApiKey)).one().id
+        session.add_all(
+            [
+                _row(key_id, now, RequestStatus.IN_PROGRESS),
+                _row(key_id, now, RequestStatus.COMPLETED),
+            ]
+        )
+        session.commit()
+        ids = list(session.scalars(select(Request.id).order_by(Request.id)))
+        updated = _mark_stale(session, ids, now)
+    assert updated == 1
+    with sessions() as session:
+        rows = list(session.scalars(select(Request).order_by(Request.id)))
+    assert rows[0].status == RequestStatus.GATEWAY_ERROR
+    assert rows[1].status == RequestStatus.COMPLETED
+    assert rows[1].input_tokens == 3
+    assert rows[1].usage_source == UsageSource.REPORTED
     app.extensions["lgw_http"].close()
 
 
