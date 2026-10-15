@@ -253,6 +253,26 @@ def test_connect_timeout_is_504_and_connect_error_is_502(tmp_path):
     app.extensions["lgw_http"].close()
 
 
+def test_timeout_before_headers_is_a_gateway_timeout(tmp_path):
+    app = create_proxy_app(tmp_path)
+    raw_key = _insert_key(app)
+
+    def _send(upstream_request, stream=False):
+        del upstream_request, stream
+        raise httpx.ReadTimeout("slow")
+
+    app.extensions["lgw_http"].send = _send
+    body = {"model": "m", "messages": [{"role": "user", "content": "hello"}]}
+    response = _post(app, raw_key, body)
+    assert response.status_code == 504
+    assert response.get_json()["error"]["code"] == "upstream_timeout"
+    record = _records(app)[0]
+    assert record.status == "gateway_error"
+    assert record.usage_source == "unknown"
+    assert record.input_tokens == 0
+    app.extensions["lgw_http"].close()
+
+
 def test_read_timeout_is_upstream_interrupted(tmp_path):
     app = create_proxy_app(tmp_path)
     raw_key = _insert_key(app)

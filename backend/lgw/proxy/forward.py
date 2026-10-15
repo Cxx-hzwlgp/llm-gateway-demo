@@ -34,7 +34,12 @@ _READ_ERRORS = (
     httpx.ReadError,
     httpx.RemoteProtocolError,
 )
-_CONNECT_TIMEOUTS = (httpx.ConnectTimeout, httpx.WriteTimeout)
+_SEND_TIMEOUTS = (
+    httpx.ConnectTimeout,
+    httpx.WriteTimeout,
+    httpx.ReadTimeout,
+    httpx.PoolTimeout,
+)
 
 
 def forward_chat(api_key):
@@ -108,7 +113,7 @@ def _call_upstream(record_id, api_key, provider, body, stream):
     try:
         upstream = client.send(upstream_request, stream=True)
     except httpx.RequestError as exc:
-        return _send_failure(exc, body)
+        return _send_failure(exc)
     if stream and upstream.status_code == 200:
         return "live", upstream
     try:
@@ -186,8 +191,8 @@ def _reported_usage(record_id, payload):
         return None
 
 
-def _send_failure(exc, body):
-    if isinstance(exc, _CONNECT_TIMEOUTS):
+def _send_failure(exc):
+    if isinstance(exc, _SEND_TIMEOUTS):
         return (
             _gateway_outcome(),
             error_response(
@@ -197,8 +202,6 @@ def _send_failure(exc, body):
                 504,
             ),
         )
-    if isinstance(exc, _READ_ERRORS):
-        return _interrupted(body)
     return (
         _gateway_outcome(),
         error_response(
@@ -249,7 +252,7 @@ def forward_models():
     try:
         upstream = client.send(upstream_request, stream=True)
     except httpx.RequestError as exc:
-        return _send_failure(exc, {})[1]
+        return _send_failure(exc)[1]
     try:
         try:
             payload = upstream.read()
