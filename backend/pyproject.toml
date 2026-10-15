@@ -1,0 +1,49 @@
+[project]
+name = "lgw"
+version = "0.1.0"
+description = "LLM gateway demo: API key management and usage tracking"
+requires-python = ">=3.12"
+dependencies = [
+    "flask~=3.1",
+    "gevent~=25.9",
+]
+
+[dependency-groups]
+dev = [
+    "pylint~=3.3",
+    "pytest~=8.4",
+    "ruff~=0.14",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[tool.ruff]
+line-length = 79
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "D", "UP", "B"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.pylint.format]
+max-line-length = 79
+
+[tool.pylint."messages control"]
+disable = ["import-outside-toplevel"]
+
+[tool.pylint.design]
+max-args = 6
+min-public-methods = 1
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

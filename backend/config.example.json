@@ -1,0 +1,22 @@
+{
+  "database": {
+    "url": "sqlite:///lgw.db"
+  },
+  "oidc": {
+    "issuer": "https://keycloak.example.com/realms/example",
+    "client_id": "",
+    "client_secret": "",
+    "redirect_uri": "http://localhost:5173/api/v1/auth/callback",
+    "admin_group": "lgw_admin"
+  },
+  "admin": {
+    "secret_key": "change-me",
+    "host_url": "http://localhost:5173"
+  },
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "api_key": ""
+    }
+  }
+}
