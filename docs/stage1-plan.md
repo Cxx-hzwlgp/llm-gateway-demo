@@ -33,12 +33,18 @@ lgw Key 认证通过后，把 OpenAI 兼容请求转发到 DeepSeek，支持流�
   },
   "providers": {
     "deepseek": {
+      "type": "deepseek",
       "base_url": "https://api.deepseek.com",
       "api_key": ""
     }
   }
 }
 ```
+
+- `providers` 的键名是供应商名，写入 `requests.provider`；`type` 决定使用的适配器
+  （阶段 1 只有 `deepseek`）。规则见 dev-plan 数据模型。
+- 阶段 1 只支持配置一个供应商，`create_app` 校验：数量不为 1、名称不符合格式或 `type` 未知时
+  启动失败。多个供应商时如何路由（按模型名还是按路径）在阶段 4 决定。
 
 - `upstream_read_timeout` 是两次读取之间的最大间隔，不是整个请求的时长。DeepSeek 在排队
   时会发送 keep-alive（流式为 `: keep-alive` 注释，非流式为空行），会重置该计时；排队超过
@@ -87,6 +93,7 @@ lgw/
 
 - 从 `Authorization: Bearer lgw-...` 取 Key，SHA-256 后按 `key_hash` 查询，要求状态为启用。
 - 缺失、格式错误、不存在或已停用：返回 401，不写 `requests`（没有可关联的 Key）。
+- 每次请求都查库，不缓存认证结果。
 - `last_used_at`：距上次更新超过 1 分钟才写，减少 SQLite 写入。
 
 ### 2. 请求改写（`providers/deepseek.py`）
@@ -97,10 +104,14 @@ lgw/
   出站 Key 的不同用户。
 - `stream_options` 等其余参数原样转发，不注入 `include_usage`（DeepSeek 总会在最后一个
   chunk 返回 usage）。请求体解析失败返回 400，不访问上游。
+- 上游地址只取自所选供应商配置的 `base_url`，请求中任何地址类字段都不影响目标。
+- `model` 缺失、不是字符串或超过 255 字符：返回 400，不访问上游。
+- 不做自动重试；上游失败直接按「错误映射」返回。
 
 ### 3. 开始记录
 
-插入 `requests` 记录（`in_progress`，`provider`、`model` 取自请求体），提交后再访问上游。
+插入 `requests` 记录（`in_progress`，`provider` 为所选供应商名，`model` 为请求体中的值），
+提交后再访问上游。
 这样进程崩溃时记录仍在，可被清扫。
 
 ### 4. 访问上游并检查状态码
@@ -115,6 +126,7 @@ lgw/
 
 读完整响应体，解析 `usage`，更新记录为 `completed` + `reported`，返回原始响应体和状态码。
 响应体前可能有 keep-alive 空行，`json.loads` 会忽略首尾空白，无需特殊处理。
+响应体不是合法 JSON 或缺少 `usage` 时仍原样返回，记录为 `completed` + `estimated`，记 warning。
 
 usage 字段映射（流式相同）：
 
@@ -132,17 +144,30 @@ usage 字段映射（流式相同）：
 
 返回 `text/event-stream` 响应（`Cache-Control: no-cache`），由生成器逐事件转发：
 
-1. `sse.py` 用 `iter_lines()` 累积行，遇到空行得到一个完整事件；注释事件（`: keep-alive`）
-   原样转发。
-2. 每个 `data:` 事件：解析 JSON，累积 `delta.content` 与 `delta.reasoning_content`；
-   `usage` 不为 `null` 时保存（客户端设置 `include_usage: true` 时其余 chunk 的 `usage` 为
-   `null`）。usage 位于 `[DONE]` 前最后一个含 `finish_reason` 的 chunk 上。
-3. 事件原样转发，不修改内容；每个事件收到后立即 `yield`，不做合并。
+1. `sse.py` 把 `iter_bytes()` 读到的数据块（已按 `Content-Encoding` 解压；不向客户端转发
+   该头）累积到缓冲区，在原始字节上按空行切出完整事件（行结束符可以是 `\n`、`\r\n` 或 `\r`，
+   按 SSE 规范允许混用；连续两个行结束符即事件结束），每个事件同时给出原始字节（含换行符）
+   和解析出的字段。不用 `iter_lines()`，它会去掉换行符，转发时无法还原上游字节。注释事件
+   （`: keep-alive`）同样转发。上游结束时缓冲区中剩余的不完整事件原样转发，并照常解析
+   （结尾缺空行的 `data: [DONE]` 仍算正常结束）。
+2. 每个 `data:` 事件：解析 JSON，累积 `delta.content`、`delta.reasoning_content` 以及
+   `delta.tool_calls` 中的函数名和参数片段（供估算使用）；`usage` 不为 `null` 时保存（客户端
+   设置 `include_usage: true` 时其余 chunk 的 `usage` 为 `null`）。usage 位于 `[DONE]` 前
+   最后一个含 `finish_reason` 的 chunk 上。JSON 解析失败或字段结构不符合预期时，事件照常
+   转发，只记 warning。
+3. 转发每个事件的原始字节，不修改内容；每个事件切出后立即 `yield`，不做合并。按完整事件
+   转发，上游中途断开时客户端不会收到半截事件，随后追加的错误事件能被正常解析。
 4. 看到 `data: [DONE]` 时标记正常结束。
 5. 在 `finally` 中关闭上游响应（客户端断开时也能让上游停止生成），并写入最终状态和用量。
 
 Flask 在视图函数返回后才执行生成器，所需数据（Key、请求体、记录 id）在返回前取出，
 生成器内不访问 `flask.request`。
+
+### 6. 写入最终记录
+
+流式与非流式共用。写入失败（如 SQLite 锁超时）时记 error 日志，内容包括记录 id、状态和
+用量，便于人工补录；不向客户端抛出异常。记录会保持 `in_progress`，最终被 `sweep` 标为
+`gateway_error` + `unknown`，这是已知的误标，靠日志补救。
 
 ## 状态判定
 
@@ -159,6 +184,8 @@ Flask 在视图函数返回后才执行生成器，所需数据（Key、请求�
 
 - 收到上游 usage：`reported`，即使之后客户端断开（usage 先于 `[DONE]` 到达）。
 - 中断且没有 usage：`estimated`（见「估算」）。
+- 正常结束但没有收到 usage 或 usage 无法解析：`estimated`，记 warning（说明上游格式变化或
+  解析代码有误，需要排查）。
 - 上游拒绝：Token 记 0，来源 `reported`（上游不计费）。
 - 连接上游失败、清扫：Token 记 0，来源 `unknown`。
 
@@ -218,9 +245,11 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
   `TIKTOKEN_CACHE_DIR`；内网无法访问下载地址时，事先下载到该目录。镜像构建时预先下载，
   运行时不依赖外网。
 - 编码使用 `encode_ordinary`，用户文本中出现 `<|endoftext|>` 等特殊 token 字面量时不会报错。
-- 输入：对 messages 的 `role` 与 `content` 拼接后编码，不套用 chat template；`content` 为
-  数组（多模态）时只计文本部分。
-- 输出：已转发的 `content` + `reasoning_content` 拼接后编码。
+- 输入：拼接后编码，不套用 chat template。包括 messages 的 `role`、`content`（数组形式时只计
+  文本部分）、`reasoning_content`、assistant 消息中 `tool_calls` 的函数名和参数，以及请求中
+  `tools` 定义的 JSON 文本。Agent 客户端（Cline 等）的工具定义和工具调用占输入的很大比例，
+  只计 `content` 会严重低估。
+- 输出：已转发的 `content` + `reasoning_content` + 工具调用函数名和参数拼接后编码。
 - 缓存命中：记 0。
 - 估算只在 `finally` 中执行一次。阶段 1 实测长上下文（如 100k Token）的耗时，评估是否阻塞
   同 worker 的其他请求（gevent 约束）。
@@ -234,11 +263,17 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 ### 单元测试（pytest + respx）
 
 - `keys.py`：格式、哈希、`key_hint`。
-- `sse.py`：多行事件、注释事件、跨读取边界切分、结尾没有空行。
+- `sse.py`：多行事件、注释事件、跨读取边界切分（包括换行符本身被拆开，如 `\r` 与 `\n`
+  分属两个数据块）、一个数据块含多个事件、`\n` / `\r\n` 换行的原始字节与输入一致、结尾没有
+  空行。
 - `providers/deepseek.py`：`user_id` 覆盖（含客户端自带值）、`stream_options` 原样保留、
-  usage 字段映射、`include_usage: true` 时中间 chunk 的 `usage: null` 不覆盖已保存值。
+  usage 字段映射、`include_usage: true` 时中间 chunk 的 `usage: null` 不覆盖已保存值、
+  `tool_calls` 参数片段累积、非法 JSON 事件和缺失 usage 不抛异常。
 - `errors.py`：每个上游状态码的映射结果。
-- `estimate.py`：messages 拼接（含数组形式的 `content`）、特殊 token 字面量、空输出。
+- `estimate.py`：messages 拼接（含数组形式的 `content`、`tool_calls`、`tools` 定义）、特殊
+  token 字面量、空输出。
+- `recorder.py`：最终写入失败时只记日志、不抛异常。
+- 配置校验：供应商数量、名称格式、未知 `type`；`model` 缺失 / 非字符串 / 过长时返回 400。
   使用真实的 `o200k_base` 编码，测试环境需能下载或已缓存编码文件。
 
 ### 集成测试（真实进程）
@@ -260,8 +295,11 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 | 流式中上游断开                | `upstream_interrupted` + `estimated`，客户端收到错误事件 |
 | 流结束但没有 `[DONE]`         | `upstream_interrupted`                  |
 | 上游读取超时                 | `upstream_interrupted`                  |
+| 流式工具调用                  | 客户端收到的字节与上游一致；客户端断开时估算包含工具调用参数 |
+| 流式正常但没有 usage            | `completed` + `estimated`               |
+| 流中出现非法 JSON 的 `data:` 事件 | 事件原样转发，流正常结束                          |
 | 上游 401 / 402            | 客户端收到 502，记录 `upstream_error`          |
-| 上游 400 / 429            | 状态码和响应体原样转发                             |
+| 上游 400 / 429 / 5xx      | 状态码和响应体原样转发，记录 `upstream_error`      |
 | lgw Key 无效 / 停用          | 401，不写记录                                 |
 | `sweep`                 | 超时的 `in_progress` 被标为 `gateway_error` + `unknown` |
 
@@ -272,6 +310,11 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
    而不是 401）；抽查一次流式响应，确认 usage 位置与文档一致。
 3. 上述集成测试全部通过；`ruff format --check`、`ruff check`、`pylint` 通过。
 4. 记录实测结论：SDK 对错误事件的行为、客户端断开的感知延迟、估算耗时。结论回填到本文件。
+5. 编写临时手册 `docs/stage1-manual.md`，指导从零开始：安装依赖、填写 `config.json`、
+   `init-db`、`create-key`、用 gunicorn 启动 proxy、用 curl / OpenAI SDK 验证、配置 Pi 和
+   Cline（OpenAI 兼容 provider 的 base URL、Key、模型名）、用 `sqlite3` 查看 `requests`
+   记录、手动制造客户端中断并核对记录。按手册用 Pi 和 Cline 实测（含工具调用和中途取消），
+   发现的问题回填到本文件。
 
 ## 提交拆分
 
@@ -284,6 +327,7 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 5. `feat(proxy): estimate tokens for interrupted requests`
 6. `feat(proxy): add models passthrough and sweep command`
 7. `test(proxy): add integration tests with fake upstream`
+8. `docs: add stage 1 setup and testing manual`
 
 ## 已确认问题
 
@@ -293,3 +337,6 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
    不高，改用通用分词器（`tiktoken` `o200k_base`）估算所有模型，接受可能不准确。
 4. `upstream_read_timeout` 默认 120 秒、`max_request_seconds` 默认 30 分钟是否合适。—— 先用
    默认值，出现问题再调整。
+5. `usage_source = unknown` 时 Token 列记 0 还是 NULL。—— 记 0，由 `usage_source` 区分。
+6. 非流式是否边收边转发上游字节（含 keep-alive 空行），避免排队期间客户端或中间代理超时。
+   —— 保持完整读取后返回；阶段 1 实测长时间排队的情况后再决定。

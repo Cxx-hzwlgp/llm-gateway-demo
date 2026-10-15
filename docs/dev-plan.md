@@ -10,7 +10,8 @@
 - 转发模块认证 lgw Key 后转发请求，只统计 Token（总输入、总输出、缓存命中），不限额、不计费、
 不保存请求内容。
 - 上游：DeepSeek `/chat/completions`（第一阶段），AWS Bedrock（第四阶段）。
-- 支持查询用量：时间范围、指定一组 Key，两者可复合。
+- 支持查询用量：按时间范围、一组 Key、一组供应商、一组模型筛选，条件可任意组合；结果可按天、
+  Key、供应商、模型分组。
 
 ## 已确认的技术决策
 
@@ -73,10 +74,31 @@ Ingress Controller 暴露，TLS 由 cert-manager 签发：
 
 - `api_keys.name`、`key_hint`：界面要求展示 Key 名称和掩码文本（如 `lgw-ab12…yz89`）。
 - `requests.ended_at`、`provider`、`model`：区分上游和模型，便于排查与按模型统计。
+  - `provider` 存供应商名，即配置中 `providers` 下的键名，由网关按路由选定，不来自客户端。
+    同一类型可以配置多个供应商（如两个 DeepSeek 账号），用 `type` 字段指定适配器：
+    `"providers": {"deepseek": {"type": "deepseek", "base_url": ..., "api_key": ...}}`。
+    供应商名是用量记录的稳定标识，限定为 `[a-z0-9-]+`、最长 64；改名等于新增一个供应商，
+    旧记录保留旧名。不建供应商表，配置文件就是唯一来源。
+  - `model` 存客户端请求的模型名，原样保存、区分大小写。上游报错或中断时也能记录，与用户
+    在客户端里选择的名字一致。缺失、不是字符串或超过 255 字符时返回 400，不访问上游。
+  - 索引：`started_at`，`(key_id, started_at)`。demo 数据量下，供应商和模型筛选不单独建索引。
 - `requests.usage_source`：`reported` / `estimated` / `unknown`，区分官方 usage 和估算值。
 
 `requests.status`：`in_progress`、`completed`、`upstream_interrupted`、`client_interrupted`、
-`upstream_error`（上游返回非 200，Token 记 0）、`gateway_error`。
+`upstream_error`（上游返回非 200，Token 记 0）、`gateway_error`。`status` 描述请求执行结果，
+`usage_source` 描述用量是否可信，两者独立：转发成功不代表用量统计成功。
+
+Token 列的语义由 lgw 定义，与上游无关，每个 provider 的解析器负责转换到这一语义，
+不直接复制上游字段：
+
+- `input_tokens`：全部输入 Token，包括缓存读取和缓存写入的部分。
+- `cache_hit_tokens`：`input_tokens` 中从缓存读取的部分，不会大于 `input_tokens`。
+- `output_tokens`：全部输出 Token，包括推理内容和工具调用参数。
+- 不记录缓存写入量。不做计费时不需要；以后要与 AWS 账单对账时再增加列。
+
+DeepSeek 的 `prompt_tokens` 已包含缓存命中，可直接作为 `input_tokens`。Bedrock Converse 的
+`inputTokens` 据了解不含 `cacheReadInputTokens` / `cacheWriteInputTokens`，需要相加，
+阶段 4 按官方文档核实。
 
 Key 格式为 `lgw-` + `secrets.token_urlsafe(32)`，库中只存 SHA-256。Key 为高熵随机串，
 不需要 bcrypt 这类慢哈希，认证时可直接按哈希索引查询。
@@ -98,7 +120,8 @@ Key 格式为 `lgw-` + `secrets.token_urlsafe(32)`，库中只存 SHA-256。Key 
 5. **崩溃恢复**：多 worker / 多副本下，单个进程启动时不能把全部 `in_progress` 标为 unknown，
   否则会误伤其他进程的在途请求。改为定期清扫：`in_progress` 且 `started_at` 超过最大请求时长
    （可配置，默认 30 分钟）的记录标为 `gateway_error` + `unknown`。
-6. **Key 失效**：只在请求开始时校验，在途请求不受影响（符合笔记约定）。
+6. **Key 失效**：只在请求开始时校验，在途请求不受影响（符合笔记约定）。每次请求都查数据库，
+  不缓存认证结果，停用对新请求立即生效。以后如需引入缓存，先确定可接受的停用生效延迟。
 7. **gevent 约束**：每个 worker 是单线程多协程，只在 IO 等待时切换。CPU 密集操作（如
   Token 估算）会阻塞同 worker 的所有请求，阶段 1 需实测耗时；数据库驱动必须兼容 monkey
    patch，阶段 3 选用 PyMySQL 或 psycopg 3，避免 `mysqlclient` 等 C 驱动。
@@ -107,6 +130,11 @@ Key 格式为 `lgw-` + `secrets.token_urlsafe(32)`，库中只存 SHA-256。Key 
   不能原样转发，否则客户端会误以为自己的 lgw Key 失效；这类错误转为 502 并记录日志。
   429 原样转发，但要注意 DeepSeek 并发限制按账户计算，所有 lgw 用户共享同一额度。
   详细映射见阶段 1 计划。
+9. **转发边界**：上游地址只来自服务端配置，不接受客户端指定（避免 SSRF 和出站 Key 泄露）；
+  用量归属只由 lgw Key 决定。网关不做自动重试和回退，一个 `requests` 记录对应一次上游调用；
+  需要重试时由客户端发起，每次重试是一条独立记录。
+10. **用量解析不影响转发**：解析 SSE 事件或 usage 失败、写入最终记录失败，都只记日志并降级
+  `usage_source`，不能中断或改变发给客户端的响应。
 
 ## 阶段计划
 
@@ -137,8 +165,15 @@ gunicorn gevent worker 启动。
 1. admin：Authlib OIDC 登录 / 回调 / 登出，首次登录写入 `users`。
 2. API（RESTful，错误返回 `{"message": ...}`，与参考项目一致）：
   - `GET/POST /api/v1/keys`、`PATCH /api/v1/keys/<id>`（停用）
-  - `GET /api/v1/usage?start=&end=&key_ids=`（按 Key、按天聚合）
-  - 管理员：`GET /api/v1/admin/keys`、`GET /api/v1/admin/usage`、停用任意 Key
+  - `GET /api/v1/usage?start=&end=&key_ids=&providers=&models=&group_by=`：筛选条件可组合，
+    多值用逗号分隔，省略表示不限；`group_by` 取 `day`、`key`、`provider`、`model` 的任意组合
+    （默认 `day,key`）。每行返回分组字段、请求数和三项 Token 之和，并按 `usage_source` 分别
+    给出 `estimated` / `unknown` 的请求数，便于判断数据可信度。
+  - `GET /api/v1/usage/filters`：返回可选的供应商和模型。供应商为当前配置与历史记录中出现过的
+    名称的并集（已删除的供应商仍可查历史）；模型为 `requests` 中出现过的值。普通用户只看到
+    自己 Key 下的模型。
+  - 管理员：`GET /api/v1/admin/keys`、`GET /api/v1/admin/usage`（参数同上，`group_by` 另可
+    取 `user`）、停用任意 Key
 3. 前端：登录态、Key 列表 / 创建（一次性展示）/ 停用、用量查询、管理员视图。
 
 验收：用测试 Keycloak 登录，完成创建 Key、调用、查询用量全流程；普通用户无法访问
@@ -173,6 +208,14 @@ gunicorn gevent worker 启动。
 
 先调研再定方案：客户端以何种协议访问（OpenAI 兼容格式由网关翻译为 Converse，或透传
 Bedrock 原生接口），以及流式响应中 usage 的获取方式。中断时的估算沿用通用分词器。
+
+- 确定多个供应商时的路由方式（按模型名映射还是按路径区分），路由结果决定
+  `requests.provider`，客户端不能直接指定供应商名以外的上游信息。
+- 优先选择不需要协议翻译的方案。跨协议翻译要处理消息、工具调用、推理内容、结束原因和
+  流式事件，不只是字段改名，出错时请求往往仍能成功，只是工具调用或 usage 悄悄出错。
+- 访问 Bedrock 原生接口需要 SigV4 签名，交给 AWS SDK 完成，不自行拼接或修改已签名的请求。
+- 验收覆盖：普通 / 流式请求、usage 映射（含缓存字段，按上文 Token 语义）、客户端断开、
+  上游 400 / 429 / 5xx、工具调用（流式与非流式）、上游长时间无数据。
 
 ## 待确认问题
 
