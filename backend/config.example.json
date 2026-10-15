@@ -13,8 +13,14 @@
     "secret_key": "change-me",
     "host_url": "http://localhost:5173"
   },
+  "proxy": {
+    "max_request_seconds": 1800,
+    "upstream_connect_timeout": 10,
+    "upstream_read_timeout": 120
+  },
   "providers": {
     "deepseek": {
+      "type": "deepseek",
       "base_url": "https://api.deepseek.com",
       "api_key": ""
     }
