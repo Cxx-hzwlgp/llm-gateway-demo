@@ -330,3 +330,21 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 6. `feat(proxy): add models passthrough and sweep command`
 7. `test(proxy): add integration tests with fake upstream`
 8. `docs: add stage 1 setup and testing manual`
+
+## 实测记录
+
+2026-10-15，在本机 WSL 上根据自动化测试和一次估算计时记录。真实 DeepSeek、Pi、Cline
+留到有出站 Key 和客户端之后，没有按验收第 1、2、5 项做联调。
+
+- OpenAI Python SDK 1.109.1：流式事件的 JSON 含 `error` 对象时抛出 `APIError`。
+  集成测试用缺少 `[DONE]` 的流让网关追加错误事件，SDK 因此抛出该异常。
+- 客户端断开：假上游每 50 ms 继续输出时，客户端读完首个事件后关闭连接，记录变为
+  `client_interrupted`，假上游的生成器收到 `GeneratorExit`。测试在 5 秒内观察到
+  这个结果，没有再拆更细的延迟。上游一直不输出时，要等到下一次读取或
+  `upstream_read_timeout`；读超时会先记成 `upstream_interrupted`。
+- 估算：同一次调用里输入、输出各约 5 万 token（合计约 10 万）耗时 6.3 ms。
+  demo 流量下，单次估算不会把同一个 gevent worker 堵住。
+- 非流式长时间排队时客户端会不会超时：没有对真实 DeepSeek 测量。
+
+Pi 和 Cline 只写在 [stage1-manual.md](stage1-manual.md) 里，没有实测，因此没有
+客户端问题可回填。
