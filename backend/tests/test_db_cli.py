@@ -6,11 +6,12 @@ from lgw.db import BUSY_TIMEOUT_MS, create_engine_from_url
 from lgw.keys import hash_key, is_key_format
 from lgw.models import ApiKey, KeyStatus, User
 from lgw.proxy import create_app
+from tests.support import proxy_config
 
 
 def _app(tmp_path):
     database = tmp_path / "lgw.db"
-    return create_app({"database": {"url": f"sqlite:///{database}"}})
+    return create_app(proxy_config(f"sqlite:///{database}"))
 
 
 def test_sqlite_enables_wal_and_busy_timeout(tmp_path):

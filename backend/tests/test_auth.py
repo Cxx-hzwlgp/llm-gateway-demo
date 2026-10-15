@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from lgw.keys import generate_key, hash_key, key_hint
-from lgw.models import ApiKey, Base, KeyStatus, Request, User
-from lgw.proxy import create_app
+from lgw.models import ApiKey, KeyStatus, Request, User
+from tests.support import create_proxy_app
 
 _FIXED_NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 _ERROR = {
@@ -19,10 +19,7 @@ _ERROR = {
 
 
 def _app(tmp_path):
-    database = tmp_path / "lgw.db"
-    app = create_app({"database": {"url": f"sqlite:///{database}"}})
-    Base.metadata.create_all(app.extensions["lgw_engine"])
-    return app
+    return create_proxy_app(tmp_path)
 
 
 def _insert_key(app, *, status=KeyStatus.ACTIVE, last_used_at=None):
@@ -90,13 +87,14 @@ def test_active_key_is_accepted_and_touched(tmp_path, monkeypatch):
     app = _app(tmp_path)
     raw_key = _insert_key(app)
     response = _post(app, raw_key)
-    assert response.status_code == 501
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_json"
     sessions = app.extensions["lgw_sessions"]
     with sessions() as session:
         stored = session.scalars(select(ApiKey)).one()
         assert stored.last_used_at.replace(tzinfo=UTC) == _FIXED_NOW
     again = _post(app, raw_key)
-    assert again.status_code == 501
+    assert again.status_code == 400
     with sessions() as session:
         stored = session.scalars(select(ApiKey)).one()
         assert stored.last_used_at.replace(tzinfo=UTC) == _FIXED_NOW
@@ -107,7 +105,7 @@ def test_last_used_at_updates_only_after_one_minute(tmp_path, monkeypatch):
     app = _app(tmp_path)
     recent = _FIXED_NOW - timedelta(minutes=1)
     raw_key = _insert_key(app, last_used_at=recent)
-    assert _post(app, raw_key).status_code == 501
+    assert _post(app, raw_key).status_code == 400
     sessions = app.extensions["lgw_sessions"]
     with sessions() as session:
         stored = session.scalars(select(ApiKey)).one()
@@ -118,7 +116,7 @@ def test_last_used_at_updates_only_after_one_minute(tmp_path, monkeypatch):
         stored = session.scalars(select(ApiKey)).one()
         stored.last_used_at = stale
         session.commit()
-    assert _post(app, raw_key).status_code == 501
+    assert _post(app, raw_key).status_code == 400
     with sessions() as session:
         stored = session.scalars(select(ApiKey)).one()
         assert stored.last_used_at.replace(tzinfo=UTC) == _FIXED_NOW

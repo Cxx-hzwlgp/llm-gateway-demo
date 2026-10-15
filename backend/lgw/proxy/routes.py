@@ -1,7 +1,7 @@
 """Proxy HTTP routes."""
 
 from lgw.proxy.auth import AuthenticatedKey, authenticate
-from lgw.proxy.errors import error_response
+from lgw.proxy.forward import forward_chat
 
 
 def register_routes(app):
@@ -15,13 +15,8 @@ def register_routes(app):
 
     @app.post("/v1/chat/completions")
     def chat_completions():
-        """Authenticate the caller before the request is forwarded."""
+        """Authenticate the caller and forward a chat completion."""
         result = authenticate()
         if not isinstance(result, AuthenticatedKey):
             return result
-        return error_response(
-            "not implemented",
-            "gateway_error",
-            "not_implemented",
-            501,
-        )
+        return forward_chat(result)
