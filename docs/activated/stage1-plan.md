@@ -64,10 +64,13 @@ lgw/
     ├── __init__.py          # create_app：注册路由、CLI、共享 httpx.Client
     ├── routes.py            # /v1/chat/completions、/v1/models
     ├── auth.py              # 解析 Authorization，按哈希查 Key
-    ├── errors.py            # OpenAI 格式错误响应、上游错误映射、SSE 错误事件
+    ├── catalog.py           # 启动时拉取并索引模型表
+    ├── forward.py           # 校验、落库、调用上游、非流式收尾
+    ├── streaming.py         # 流式转发、断开检测、流内错误事件
+    ├── errors.py            # OpenAI 格式错误响应、上游状态码映射
     ├── sse.py               # 把上游字节流切分为完整 SSE 事件
     ├── recorder.py          # 请求记录：开始时插入，结束时更新状态和用量
-    ├── estimate.py          # 中断时的 Token 估算
+    ├── estimate.py          # 没有上游 usage 时的 Token 估算
     └── providers/
         └── deepseek.py      # 请求改写、usage 解析
 ```
@@ -82,8 +85,8 @@ lgw/
 - CLI（`flask --app lgw.proxy ...`）：
   - `init-db`：建表。
   - `create-key --user-sub <sub> --username <name> --name <key 名称>`：用户不存在时创建，
-    打印完整 Key（只打印这一次）。`sub` 会作为 DeepSeek `user_id` 发送，创建用户时校验其匹配
-    `[a-zA-Z0-9\-_]+` 且长度不超过 512。登录功能完成后此命令保留为运维工具。
+    打印完整 Key（只打印这一次）。模型名以 `deepseek` 开头时，`sub` 才作为上游 `user_id`
+    发送。创建用户时校验其匹配 `[a-zA-Z0-9\-_]+` 且长度不超过 512。登录功能完成后此命令保留为运维工具。
   - `sweep`：把 `in_progress` 且 `started_at` 超过 `max_request_seconds` 的记录标为
     `gateway_error` + `unknown`。阶段 1 手动执行，阶段 4 用 CronJob。
 
@@ -100,8 +103,8 @@ lgw/
 
 - `Authorization` 替换为出站 Key；只转发 `Content-Type` 和 `Accept` 等必要请求头，
   不透传客户端的其他头。
-- `user_id` 一律覆盖为 lgw 用户的 `sub`（客户端自带的值被替换），用于 DeepSeek 区分共用
-  出站 Key 的不同用户。
+- 模型名以 `deepseek` 开头时，`user_id` 覆盖为 lgw 用户的 `sub`（客户端自带的值被替换），
+  用于 DeepSeek 区分共用出站 Key 的不同用户。其他模型不添加、不改写 `user_id`。
 - `stream_options` 等其余参数原样转发，不注入 `include_usage`（DeepSeek 总会在最后一个
   chunk 返回 usage）。请求体解析失败返回 400，不访问上游。
 - 上游地址只取自所选供应商配置的 `base_url`，请求中任何地址类字段都不影响目标。
@@ -219,7 +222,8 @@ Flask 在视图函数返回后才执行生成器，所需数据（Key、请求�
 | 上游 5xx                       | 原样转发状态码和响应体              | 上游故障，客户端可重试                           |
 | 连接上游失败                       | 502 `upstream_unavailable` |                                       |
 | 连接上游超时                       | 504 `upstream_timeout`   |                                       |
-| 网关自身异常                       | 500 `gateway_error`      | 记录异常堆栈                                |
+| 插入记录失败，或非流式处理中的未预期异常     | 500 `gateway_error`      | 记录异常堆栈                                |
+| 认证时数据库查询失败                  | Flask 默认的 HTML 500     | 未捕获，不写 `requests`。更新 `last_used_at` 失败只记日志，认证仍成功 |
 
 转为 502 的错误不透传上游响应体（可能包含出站账户信息），只在网关日志中保存。
 
@@ -232,13 +236,14 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 
 ```
 
+- 流已经开始后，网关自己的未预期异常也发送这条错误事件。记录为 `gateway_error`：已经收到 usage 时来源仍是 `reported`，否则 Token 记 0、来源 `unknown`。
 - OpenAI Python SDK 遇到带 `error` 字段的事件会抛出 `APIError`（阶段 1 用实际使用的 SDK 版本验证）。
 - 缺少 `[DONE]` 作为自行解析流的客户端的第二个判断依据。
 - 客户端断开时无需通知。
 
 ## 估算（`estimate.py`）
 
-估算只在中断且没有收到 usage 时使用，场景少、对准确度要求不高，因此所有模型（DeepSeek、
+没有收到可用 usage 时使用，包括请求中断，以及正常结束但 usage 缺失或无法解析。正常结束却要估算时记 warning。场景少、对准确度要求不高，因此所有模型（DeepSeek、
 以后的 Bedrock 等）共用一个通用分词器，接受与各模型实际计费 Token 存在偏差。
 
 - 分词器：`tiktoken` 的 `o200k_base` 编码，与模型、厂商无关。在 app 创建时加载一次，
@@ -253,7 +258,7 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
   只计 `content` 会严重低估。
 - 输出：已转发的 `content` + `reasoning_content` + 工具调用函数名和参数拼接后编码。
 - 缓存命中：记 0。
-- 估算只在 `finally` 中执行一次。阶段 1 实测长上下文（如 100k Token）的耗时，评估是否阻塞
+- 每个请求最多估算一次，放在确定最终状态时。流式在生成器的 `finally` 里执行。阶段 1 实测长上下文（如 100k Token）的耗时，评估是否阻塞
   同 worker 的其他请求（gevent 约束）。
 
 ## `GET /v1/models`
@@ -316,7 +321,7 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 3. 上述集成测试全部通过；`ruff format --check`、`ruff check`、`pylint` 通过。
 4. 记录实测结论：SDK 对错误事件的行为、客户端断开的感知延迟、估算耗时、非流式长时间排队
    时客户端是否超时。结论回填到本文件。
-5. 编写临时手册 `docs/stage1-manual.md`，指导从零开始：安装依赖、填写 `config.json`、
+5. 编写临时手册 `docs/activated/stage1-manual.md`，指导从零开始：安装依赖、填写 `config.json`、
    `init-db`、`create-key`、用 gunicorn 启动 proxy、用 curl / OpenAI SDK 验证、配置 Pi 和
    Cline（OpenAI 兼容 provider 的 base URL、Key、模型名）、用 `sqlite3` 查看 `requests`
    记录、手动制造客户端中断并核对记录。按手册用 Pi 和 Cline 实测（含工具调用和中途取消），
@@ -337,8 +342,7 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 
 ## 实测记录
 
-2026-10-15，在本机 WSL 上根据自动化测试和一次估算计时记录。真实 DeepSeek、Pi、Cline
-留到有出站 Key 和客户端之后，没有按验收第 1、2、5 项做联调。
+2026-10-15，在本机 WSL 上根据自动化测试和一次估算计时记录。
 
 - OpenAI Python SDK 1.109.1：流式事件的 JSON 含 `error` 对象时抛出 `APIError`。
   集成测试用缺少 `[DONE]` 的流让网关追加错误事件，SDK 因此抛出该异常。
@@ -350,5 +354,9 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
   demo 流量下，单次估算不会把同一个 gevent worker 堵住。
 - 非流式长时间排队时客户端会不会超时：没有对真实 DeepSeek 测量。
 
-Pi 和 Cline 只写在 [stage1-manual.md](stage1-manual.md) 里，没有实测，因此没有
-客户端问题可回填。
+2026-10-16，在 Windows 上按 [stage1-manual.md](stage1-manual.md) 用 Pi 和 Cline 调用。
+基础功能正常，响应原样透传没有问题。工具调用和中途取消随后复核，表现符合预期。
+
+同日用 curl 和 OpenAI Python SDK 通过 lgw 调用真实 DeepSeek（验收第 1、2 项）。
+流式和非流式可用。正常请求、客户端断开、出站 Key 填错时客户端收到 502 而不是 401，
+流式 usage 的位置与文档一致。

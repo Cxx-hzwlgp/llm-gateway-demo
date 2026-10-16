@@ -3,7 +3,8 @@
 在本机把 lgw proxy 跑起来，用 curl 或 OpenAI SDK 转发到 DeepSeek，并在 SQLite 里核对
 `requests` 记录。命令都在 `backend/` 目录执行。
 
-真实 DeepSeek、Pi 和 Cline 的联调还没做。下面的 Pi / Cline 只说明要填的字段。
+curl、OpenAI SDK、Pi 和 Cline 已按本手册对真实 DeepSeek 调用过，表现符合预期。
+实测结论见 [stage1-plan.md](stage1-plan.md) 的「实测记录」。
 
 ## 安装
 
@@ -157,4 +158,5 @@ uv run flask --app lgw.proxy sweep
 本机 `pi --help` 提供 `--provider`、`--model` 和 `--api-key`。自定义 base URL
 的配置项以当前 Pi 版本文档为准。Cline 选择 OpenAI Compatible provider，填上面三项。
 
-这次没有用 Pi 或 Cline 实际调用，也没有覆盖工具调用和中途取消。
+2026-10-16 已在 Windows 上用这两个客户端完成调用。基础功能正常，响应原样透传没有问题；
+工具调用和中途取消符合预期。

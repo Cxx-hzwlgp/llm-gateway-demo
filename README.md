@@ -1,31 +1,31 @@
 # llm-gateway-demo
 
-LLM 网关 demo：为 HPC 用户转发 DeepSeek 等模型 API 请求，提供 Key 管理和 Token 用量统计。
-范围、设计和阶段计划见 [docs/dev-plan.md](docs/dev-plan.md)。
+公司内部 LLM 服务平台，职责是 LLM 请求转发和 Token 用量统计。
 
-## 本地开发
+用 OpenAI 兼容接口调用 DeepSeek。网关按 Key 统计 Token，不保存请求内容，不限额，不计费。
+
+Key 管理界面还没有。Key 由维护者发放，完整内容只在发放时出现一次。
+
+## 调用
+
+Base URL 以 `/v1` 结尾。本机默认是 `http://127.0.0.1:8000/v1`。
+
+请求带 `Authorization: Bearer <lgw Key>`。模型名使用服务当前提供的名字，例如 `deepseek-flash` 或 `deepseek-v4-pro`。
+
+- `POST /v1/chat/completions`：聊天。流式时把 JSON 里的 `stream` 设为 `true`。
+- `GET /v1/models`：查看当前可用的模型名。
+
+Key 缺失、格式不对或已停用时返回 401。模型名不在当前列表里时返回 404。
 
 ```bash
-cd backend
-uv sync
-cp config.example.json config.json   # 按需填写
-uv run gunicorn -k gevent -b 127.0.0.1:5000 'lgw.admin:create_app()'
-uv run gunicorn -k gevent -b 127.0.0.1:8000 'lgw.proxy:create_app()'
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Authorization: Bearer $LGW_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-配置文件路径可通过环境变量 `CONFIG_FILE_PATH` 指定，默认 `config.json`。
+流式请求加上 `-N`，并在 JSON 中加入 `"stream": true`。
 
-## 代码规范
+OpenAI SDK、Pi 和 Cline 使用同一组配置：上面的 Base URL、lgw Key，以及列表中的模型名。Pi 和 Cline 选择 OpenAI 兼容的提供方。
 
-- PEP8，行宽 79；docstring 使用 numpy 格式。
-- 提交前运行：
-
-  ```bash
-  uv run ruff format .
-  uv run ruff check .
-  uv run pylint lgw
-  uv run pytest
-  ```
-
-- 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)，每次提交保持单一功能。
-- API 采用 RESTful 风格，错误响应格式为 `{"message": "..."}`。
+本机安装、填写配置、发放 Key 和启动服务见 [docs/activated/stage1-manual.md](docs/activated/stage1-manual.md)。
