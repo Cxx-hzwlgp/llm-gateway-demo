@@ -42,7 +42,7 @@ def _post(app, raw_key, body, **headers):
     }
     extra.update(headers)
     return app.test_client().post(
-        "/v1/chat/completions",
+        "/chat/completions",
         data=json.dumps(body).encode(),
         headers=extra,
     )
@@ -233,7 +233,7 @@ def test_invalid_json_does_not_call_upstream(tmp_path):
     with respx.mock:
         route = respx.post(_URL).mock(return_value=httpx.Response(200))
         response = app.test_client().post(
-            "/v1/chat/completions",
+            "/chat/completions",
             data=b"[1, 2]",
             headers={"Authorization": f"Bearer {raw_key}"},
         )

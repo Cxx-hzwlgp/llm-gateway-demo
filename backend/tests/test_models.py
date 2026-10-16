@@ -1,4 +1,4 @@
-"""GET /v1/models returns the startup catalog."""
+"""GET /models returns the startup catalog."""
 
 from sqlalchemy import select
 
@@ -10,7 +10,7 @@ from tests.test_forward import _insert_key
 def _get(app, raw_key, **headers):
     extra = {"Authorization": f"Bearer {raw_key}"}
     extra.update(headers)
-    return app.test_client().get("/v1/models", headers=extra)
+    return app.test_client().get("/models", headers=extra)
 
 
 def _record_count(app):
@@ -33,6 +33,6 @@ def test_models_come_from_the_startup_catalog(tmp_path):
         ],
     }
     assert _record_count(app) == 0
-    missing = app.test_client().get("/v1/models")
+    missing = app.test_client().get("/models")
     assert missing.status_code == 401
     app.extensions["lgw_http"].close()

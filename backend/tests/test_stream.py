@@ -51,7 +51,7 @@ def _event(payload):
 
 def _post(app, raw_key, body):
     return app.test_client().post(
-        "/v1/chat/completions",
+        "/chat/completions",
         data=json.dumps(body).encode(),
         headers={
             "Authorization": f"Bearer {raw_key}",

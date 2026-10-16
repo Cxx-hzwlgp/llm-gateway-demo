@@ -8,17 +8,17 @@ Key 管理界面还没有。Key 由维护者发放，完整内容只在发放时
 
 ## 调用
 
-Base URL 以 `/v1` 结尾。本机默认是 `http://127.0.0.1:8000/v1`。
+Base URL 是主机根。本机默认是 `http://127.0.0.1:8000`。
 
 请求带 `Authorization: Bearer <lgw Key>`。模型名使用服务当前提供的名字，例如 `deepseek-flash` 或 `deepseek-v4-pro`。
 
-- `POST /v1/chat/completions`：聊天。流式时把 JSON 里的 `stream` 设为 `true`。
-- `GET /v1/models`：查看当前可用的模型名。
+- `POST /chat/completions`：聊天。流式时把 JSON 里的 `stream` 设为 `true`。
+- `GET /models`：查看当前可用的模型名。
 
 Key 缺失、格式不对或已停用时返回 401。模型名不在当前列表里时返回 404。
 
 ```bash
-curl -s http://127.0.0.1:8000/v1/chat/completions \
+curl -s http://127.0.0.1:8000/chat/completions \
   -H "Authorization: Bearer $LGW_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}]}'

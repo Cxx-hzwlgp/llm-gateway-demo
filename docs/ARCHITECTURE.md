@@ -11,15 +11,15 @@
 
 ```
 客户端 (curl / SDK / Pi / Cline)
-        │  POST /v1/chat/completions
-        │  GET  /v1/models
+        │  POST /chat/completions
+        │  GET  /models
         ▼
    lgw.proxy  ──httpx──►  DeepSeek
         │
         ▼
      SQLite（users / api_keys / requests）
 
-   lgw.admin  ── 目前只有 GET /api/v1/healthz
+   lgw.admin  ── 目前只有 GET /api/healthz
 ```
 
 ## proxy 里的一次聊天请求
@@ -59,6 +59,6 @@ Key 的原文只在 `create-key` 时打印一次，库里保存哈希。出站 K
 
 ## 尚未落地的部分
 
-- 阶段 2：admin 做 Keycloak 登录、Key 管理和用量查询，并托管前端。浏览器只访问 admin；`/api` 与页面同源。proxy 继续只服务非浏览器客户端。
+- 阶段 2：admin 做 Keycloak 登录、Key 管理和用量查询，并在 `/console` 托管前端。浏览器只访问 admin；`/console` 与 `/api` 同源。proxy 占站点根路径，继续只服务非浏览器客户端。
 - 阶段 3：Bedrock。它不走现在的 `/models` + `/chat/completions` 路径，接入方式仍以 dev-plan 里的待定项为准。
 - 阶段 4：PostgreSQL、镜像和 Kubernetes。admin 与 proxy 仍是两个进程。

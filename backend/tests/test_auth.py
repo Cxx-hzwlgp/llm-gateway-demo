@@ -49,7 +49,7 @@ def _post(app, raw_key=None, header=None):
         headers["Authorization"] = header
     elif raw_key is not None:
         headers["Authorization"] = f"Bearer {raw_key}"
-    return app.test_client().post("/v1/chat/completions", headers=headers)
+    return app.test_client().post("/chat/completions", headers=headers)
 
 
 def _request_count(app):

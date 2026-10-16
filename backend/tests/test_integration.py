@@ -282,7 +282,7 @@ def _post(gateway, mode, *, stream=False, extra=None):
     if extra:
         body.update(extra)
     response = gateway.client.post(
-        f"{gateway.base}/v1/chat/completions",
+        f"{gateway.base}/chat/completions",
         headers={"Authorization": f"Bearer {gateway.key}"},
         json=body,
     )
@@ -315,7 +315,7 @@ def test_stream_bytes_match_upstream(gateway, mode, events):
     expected = b"".join(events)
     with gateway.client.stream(
         "POST",
-        f"{gateway.base}/v1/chat/completions",
+        f"{gateway.base}/chat/completions",
         headers={"Authorization": f"Bearer {gateway.key}"},
         json={
             "model": _MODEL,
@@ -336,7 +336,7 @@ def test_stream_tools_bytes_match(gateway):
     after_id = _max_id(gateway.database_url)
     with gateway.client.stream(
         "POST",
-        f"{gateway.base}/v1/chat/completions",
+        f"{gateway.base}/chat/completions",
         headers={"Authorization": f"Bearer {gateway.key}"},
         json={
             "model": _MODEL,
@@ -357,7 +357,7 @@ def test_client_disconnect_closes_upstream(gateway):
     state_key = uuid4().hex
     with gateway.client.stream(
         "POST",
-        f"{gateway.base}/v1/chat/completions",
+        f"{gateway.base}/chat/completions",
         headers={"Authorization": f"Bearer {gateway.key}"},
         json={
             "model": _MODEL,
@@ -457,12 +457,12 @@ def test_upstream_status_is_forwarded(gateway, mode):
 def test_invalid_and_disabled_keys_write_nothing(gateway):
     before = _count(gateway.database_url)
     missing = gateway.client.post(
-        f"{gateway.base}/v1/chat/completions",
+        f"{gateway.base}/chat/completions",
         headers={"Authorization": "Bearer lgw-not-a-real-key"},
         json={"model": "m", "messages": []},
     )
     disabled = gateway.client.post(
-        f"{gateway.base}/v1/chat/completions",
+        f"{gateway.base}/chat/completions",
         headers={"Authorization": f"Bearer {gateway.disabled}"},
         json={"model": "m", "messages": []},
     )
@@ -504,9 +504,7 @@ def test_sweep_marks_a_stale_request(gateway):
 
 
 def test_openai_sdk_streams_and_raises_on_error_events(gateway):
-    client = OpenAI(
-        base_url=f"{gateway.base}/v1", api_key=gateway.key, timeout=10
-    )
+    client = OpenAI(base_url=gateway.base, api_key=gateway.key, timeout=10)
     reply = client.chat.completions.create(
         model=_MODEL,
         messages=[{"role": "user", "content": "hello"}],

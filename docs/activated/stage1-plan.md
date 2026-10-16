@@ -62,7 +62,7 @@ lgw/
 ├── cli.py                   # flask 命令：init-db、create-key、sweep
 └── proxy/
     ├── __init__.py          # create_app：注册路由、CLI、共享 httpx.Client
-    ├── routes.py            # /v1/chat/completions、/v1/models
+    ├── routes.py            # /chat/completions、/models
     ├── auth.py              # 解析 Authorization，按哈希查 Key
     ├── catalog.py           # 启动时拉取并索引模型表
     ├── forward.py           # 校验、落库、调用上游、非流式收尾
@@ -261,7 +261,7 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 - 每个请求最多估算一次，放在确定最终状态时。流式在生成器的 `finally` 里执行。阶段 1 实测长上下文（如 100k Token）的耗时，评估是否阻塞
   同 worker 的其他请求（gevent 约束）。
 
-## `GET /v1/models`
+## `GET /models`
 
 认证 lgw Key 后返回启动时的模型表，每个模型名只出现一次，不带供应商名和出站 Key。
 不写 `requests`，不在这次请求里再访问上游。

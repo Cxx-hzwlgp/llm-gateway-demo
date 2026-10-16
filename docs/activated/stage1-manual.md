@@ -66,7 +66,7 @@ uv run gunicorn -k gevent -w 1 -b 127.0.0.1:8000 'lgw.proxy:create_app()'
 非流式：
 
 ```bash
-curl -s http://127.0.0.1:8000/v1/chat/completions \
+curl -s http://127.0.0.1:8000/chat/completions \
   -H "Authorization: Bearer $LGW_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}]}'
@@ -75,7 +75,7 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 流式：
 
 ```bash
-curl -N http://127.0.0.1:8000/v1/chat/completions \
+curl -N http://127.0.0.1:8000/chat/completions \
   -H "Authorization: Bearer $LGW_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"stream":true}'
@@ -85,7 +85,7 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 表里没有的模型名调用 chat 时返回 404，`code` 为 `model_not_found`，不写 `requests`。
 
 ```bash
-curl -s http://127.0.0.1:8000/v1/models \
+curl -s http://127.0.0.1:8000/models \
   -H "Authorization: Bearer $LGW_KEY"
 ```
 
@@ -96,7 +96,7 @@ Key 缺失、格式不对、不存在或已停用都是 401，且不产生 `requ
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="lgw-...")
+client = OpenAI(base_url="http://127.0.0.1:8000", api_key="lgw-...")
 reply = client.chat.completions.create(
     model="deepseek-flash",
     messages=[{"role": "user", "content": "hi"}],
@@ -151,7 +151,7 @@ uv run flask --app lgw.proxy sweep
 
 | 项        | 值                                  |
 | -------- | ---------------------------------- |
-| Base URL | `http://127.0.0.1:8000/v1`         |
+| Base URL | `http://127.0.0.1:8000`            |
 | API Key  | `create-key` 打印的 lgw Key          |
 | 模型名      | `deepseek-flash` 或 `deepseek-v4-pro` |
 

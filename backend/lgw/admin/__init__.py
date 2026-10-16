@@ -21,7 +21,7 @@ def create_app(config=None):
     app = Flask(__name__)
     app.config["LGW"] = config if config is not None else load_config()
 
-    @app.get("/api/v1/healthz")
+    @app.get("/api/healthz")
     def healthz():
         return {"status": "ok"}
 

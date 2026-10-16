@@ -13,7 +13,7 @@ def register_routes(app):
         Proxy application.
     """
 
-    @app.post("/v1/chat/completions")
+    @app.post("/chat/completions")
     def chat_completions():
         """Authenticate the caller and forward a chat completion."""
         result = authenticate()
@@ -21,7 +21,7 @@ def register_routes(app):
             return result
         return forward_chat(result)
 
-    @app.get("/v1/models")
+    @app.get("/models")
     def models():
         """Authenticate the caller and forward the model list."""
         result = authenticate()

@@ -45,7 +45,7 @@ backend/
 │   ├── cli.py               # init-db、create-key、sweep
 │   ├── admin/               # 登录、Key 管理、用量查询 API
 │   └── proxy/
-│       ├── routes.py        # /v1/chat/completions、/v1/models
+│       ├── routes.py        # /chat/completions、/models
 │       ├── catalog.py       # 启动时的模型表
 │       ├── forward.py       # 非流式转发
 │       ├── streaming.py     # 流式转发
@@ -59,10 +59,8 @@ deploy/                      # 阶段 4：Dockerfile、k8s 清单
 不自建 Nginx，也不引入新的网络组件。admin、proxy 各用一个 ClusterIP Service，通过公司已有的
 Ingress Controller 暴露，TLS 由 cert-manager 签发：
 
-- admin app 同时托管前端构建产物，`/` 与 `/api/` 同源，避免 CORS 和跨域 cookie 问题。
-开发时由 Vite dev server 把 `/api` 代理到 admin。
-- proxy app 通过 Ingress 对外提供 `/v1/`。调用方是 SDK / curl 等非浏览器客户端，
-不涉及 CORS 和 cookie。
+- admin app 同时托管前端构建产物，页面在 `/console`，接口在 `/api/`，二者同源，避免 CORS 和跨域 cookie 问题。会话 cookie 的 Path 限于 `/console` 和 `/api`。开发时由 Vite dev server 把 `/api` 代理到 admin，生产构建的 base 为 `/console/`。
+- proxy app 通过 Ingress 对外提供 `/`。调用方的 Base URL 是主机根，本机为 `http://127.0.0.1:8000`。调用方是 SDK / curl 等非浏览器客户端，不涉及 CORS 和 cookie。
 - Ingress Controller 为 k8s 社区的 Ingress-Nginx（`ingressClassName: nginx`，不是 nginx 社区的
 NGINX Ingress Controller，注解按前者文档编写），仍是 SSE 链路上的一层反向代理，proxy 的
 Ingress 需要单独配置注解（见阶段 4）。
@@ -86,7 +84,7 @@ Ingress 需要单独配置注解（见阶段 4）。
   - `provider` 存供应商名，即配置中 `providers` 下的键名，由网关按模型表选定，不来自客户端。
   每家供应商只配置 `base_url` 和 `api_key`：
   `"providers": {"deepseek": {"base_url": ..., "api_key": ...}}`。
-  进程启动时用各供应商自己的 Key 请求 `GET {base_url}/models`，把 `data[].id` 收成模型表： 键是模型名，值是列出该模型的供应商名称，按配置顺序排列。同一模型出现在多家时都保留； 转发时用名单里的第一家，目前没有供应商选择功能。列表失败或格式不对时进程不启动。 模型表不写回配置、不落库。对外的 `GET /v1/models` 返回这张表里的模型名，每个名字只出现一次，
+  进程启动时用各供应商自己的 Key 请求 `GET {base_url}/models`，把 `data[].id` 收成模型表： 键是模型名，值是列出该模型的供应商名称，按配置顺序排列。同一模型出现在多家时都保留； 转发时用名单里的第一家，目前没有供应商选择功能。列表失败或格式不对时进程不启动。 模型表不写回配置、不落库。对外的 `GET /models` 返回这张表里的模型名，每个名字只出现一次，
   不带供应商名和出站 Key。
   供应商名是用量记录的稳定标识，限定为 `[a-z0-9-]+`、最长 64；改名等于新增一个供应商，
   旧记录保留旧名。不建供应商表，配置文件就是唯一来源。
@@ -172,8 +170,8 @@ gunicorn gevent worker 启动。
 
 1. `db.py`、`models.py`、`keys.py`，提供 CLI：`flask --app ... init-db`、`create-key`（登录
   完成前用于发 Key，之后保留为运维工具）。
-2. proxy：`POST /v1/chat/completions`（流式与非流式）。`model` 必须在启动时的模型表里，
-  否则 404，不写 `requests`、不访问上游。`GET /v1/models` 返回该表，不在请求时再访问上游。
+2. proxy：`POST /chat/completions`（流式与非流式）。`model` 必须在启动时的模型表里，
+  否则 404，不写 `requests`、不访问上游。`GET /models` 返回该表，不在请求时再访问上游。
 3. DeepSeek provider：请求改写、usage 解析。
 4. 中断估算与超时清扫命令。
 5. 测试：用本地假上游（返回 SSE、可中途断开）覆盖四种状态；pytest + respx 覆盖解析逻辑。
@@ -185,17 +183,17 @@ gunicorn gevent worker 启动。
 
 1. admin：Authlib OIDC 登录 / 回调 / 登出，首次登录写入 `users`。
 2. API（RESTful，错误返回 `{"message": ...}`，与参考项目一致）：
-  - `GET/POST /api/v1/keys`、`PATCH /api/v1/keys/<id>`（停用）
-  - `GET /api/v1/usage?start=&end=&key_ids=&providers=&models=&group_by=`：筛选条件可组合，
+  - `GET/POST /api/keys`、`PATCH /api/keys/<id>`（停用）
+  - `GET /api/usage?start=&end=&key_ids=&providers=&models=&group_by=`：筛选条件可组合，
   多值用逗号分隔，省略表示不限；`group_by` 取 `day`、`key`、`provider`、`model` 的任意组合
   （默认 `day,key`）。每行返回分组字段、请求数和三项 Token 之和，并按 `usage_source` 分别
   给出 `estimated` / `unknown` 的请求数，便于判断数据可信度。
-  - `GET /api/v1/usage/filters`：返回可选的供应商和模型。供应商为当前配置与历史记录中出现过的
+  - `GET /api/usage/filters`：返回可选的供应商和模型。供应商为当前配置与历史记录中出现过的
   名称的并集（已删除的供应商仍可查历史）；模型为 `requests` 中出现过的值。普通用户只看到
   自己 Key 下的模型。
-  - 管理员：`GET /api/v1/admin/keys`、`GET /api/v1/admin/usage`（参数同上，`group_by` 另可
+  - 管理员：`GET /api/admin/keys`、`GET /api/admin/usage`（参数同上，`group_by` 另可
   取 `user`）、停用任意 Key
-3. 前端：登录态、Key 列表 / 创建（一次性展示）/ 停用、用量查询、管理员视图。
+3. 前端挂在 `/console`：登录态、Key 列表 / 创建（一次性展示）/ 停用、用量查询、管理员视图。
 
 验收：用测试 Keycloak 登录，完成创建 Key、调用、查询用量全流程；普通用户无法访问
 其他用户数据。
@@ -223,9 +221,10 @@ Bedrock 不是这套 `/models` + `/chat/completions` 接口，接入方式仍待
   不同启动命令）、gunicorn 配置（`graceful_timeout` 接近最大请求时长，避免滚动更新截断流）、
   k8s Deployment、ClusterIP Service、Ingress、Secret（config.json）、清扫 CronJob。
 3. Ingress：`spec.ingressClassName: nginx`，cert-manager 通过 `cert-manager.io/cluster-issuer`
-  注解签发 TLS（issuer 名称部署时向集群管理员确认）。admin（`/`、`/api/`）和 proxy（`/v1/`）
-  使用两个 Ingress 对象，可共用同一域名，Ingress-Nginx 会合并同一 host 的规则；这样长超时等
-  注解只作用于 proxy。proxy 的 Ingress 注解（`nginx.ingress.kubernetes.io/` 前缀）：
+  注解签发 TLS（issuer 名称部署时向集群管理员确认）。admin（`/console`、`/api/`）和 proxy（`/`）
+  使用两个 Ingress 对象，可共用同一域名。Ingress-Nginx 合并同一 host 的规则，并按最长前缀选择，
+  因此 `/console` 与 `/api` 进入 admin，其余路径进入 proxy。长超时等注解只作用于 proxy。proxy 的
+  Ingress 注解（`nginx.ingress.kubernetes.io/` 前缀）：
 
   | 注解                   | 值        | 原因                                       |
   | -------------------- | -------- | ---------------------------------------- |
