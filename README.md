@@ -28,4 +28,4 @@ curl -s http://127.0.0.1:8000/chat/completions \
 
 OpenAI SDK、Pi 和 Cline 使用同一组配置：上面的 Base URL、lgw Key，以及列表中的模型名。Pi 和 Cline 选择 OpenAI 兼容的提供方。
 
-本机安装、填写配置、发放 Key 和启动服务见 [docs/activated/stage1-manual.md](docs/activated/stage1-manual.md)。
+本机安装、填写配置、发放 Key 和启动服务见 [docs/completed/stage1-manual.md](docs/completed/stage1-manual.md)。

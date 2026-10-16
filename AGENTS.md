@@ -8,13 +8,15 @@
 | --- | --- |
 | 项目定位、使用方式 | [README.md](README.md) |
 | 范围、技术选择、数据模型、阶段验收 | [docs/activated/dev-plan.md](docs/activated/dev-plan.md) |
-| 阶段 1 的请求流程、错误、估算、实测 | [docs/activated/stage1-plan.md](docs/activated/stage1-plan.md) |
-| 本机安装、发放 Key、启动和核对记录 | [docs/activated/stage1-manual.md](docs/activated/stage1-manual.md) |
+| 阶段 1 的请求流程、错误、估算、实测 | [docs/completed/stage1-plan.md](docs/completed/stage1-plan.md) |
+| 阶段 1 审查发现的问题与阶段 2 前待修复项 | [docs/activated/stage1-fixes.md](docs/activated/stage1-fixes.md) |
+| 阶段 2 的登录、Key、用量和前端 | [docs/activated/stage2-plan.md](docs/activated/stage2-plan.md) |
+| 本机安装、发放 Key、启动和核对记录 | [docs/completed/stage1-manual.md](docs/completed/stage1-manual.md) |
 | 进程、模块和请求路径 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 
 ## 进度
 
-阶段 0 和阶段 1 的实现已经完成。实测记录在 `docs/activated/stage1-plan.md`。阶段 2 及以后（OIDC、admin API、前端、Bedrock、PostgreSQL、部署）留到对应阶段，不提前实现。
+阶段 0 和阶段 1 的实现已经完成。实测记录在 `docs/completed/stage1-plan.md`。阶段 1 审查发现的待修复项记录在 `docs/activated/stage1-fixes.md`，在开发阶段 2 之前先行修复。阶段 2 的计划在 `docs/activated/stage2-plan.md`，尚未实现。阶段 3 及以后（Bedrock、PostgreSQL、部署）留到对应阶段，不提前实现。
 
 ## 约定
 

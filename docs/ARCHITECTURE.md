@@ -1,7 +1,7 @@
 # 架构
 
 记录本项目的架构。
-范围和决策以 [activated/dev-plan.md](activated/dev-plan.md) 为准。阶段 1 的状态、错误和用量规则以 [activated/stage1-plan.md](activated/stage1-plan.md) 为准。本文不重复那些规则。开发约定见仓库根目录的 [AGENTS.md](../AGENTS.md)。
+范围和决策以 [activated/dev-plan.md](activated/dev-plan.md) 为准。阶段 1 的状态、错误和用量规则以 [completed/stage1-plan.md](completed/stage1-plan.md) 为准。本文不重复那些规则。开发约定见仓库根目录的 [AGENTS.md](../AGENTS.md)。
 
 ## 现状和目标
 
@@ -59,6 +59,6 @@ Key 的原文只在 `create-key` 时打印一次，库里保存哈希。出站 K
 
 ## 尚未落地的部分
 
-- 阶段 2：admin 做 Keycloak 登录、Key 管理和用量查询，并在 `/console` 托管前端。浏览器只访问 admin；`/console` 与 `/api` 同源。proxy 占站点根路径，继续只服务非浏览器客户端。
+- 阶段 2：计划见 [activated/stage2-plan.md](activated/stage2-plan.md)，尚未实现。admin 做 Keycloak 登录、Key 管理和用量查询，并在 `/console` 托管前端。浏览器只访问 admin；`/console` 与 `/api` 同源。proxy 占站点根路径，继续只服务非浏览器客户端。
 - 阶段 3：Bedrock。它不走现在的 `/models` + `/chat/completions` 路径，接入方式仍以 dev-plan 里的待定项为准。
 - 阶段 4：PostgreSQL、镜像和 Kubernetes。admin 与 proxy 仍是两个进程。

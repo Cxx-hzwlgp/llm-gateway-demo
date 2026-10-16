@@ -1,6 +1,6 @@
 # 阶段 1 开发计划：本地转发和记录（SQLite）
 
-总体范围和设计决策见 [dev-plan.md](dev-plan.md)。本文件细化阶段 1 的实现方案。
+总体范围和设计决策见 [../activated/dev-plan.md](../activated/dev-plan.md)。本文件细化阶段 1 的实现方案。
 
 ## 目标
 

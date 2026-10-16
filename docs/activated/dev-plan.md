@@ -6,7 +6,7 @@
 ## 范围
 
 - 用户通过 Keycloak OIDC 登录，可创建、停用多个 lgw Key；Key 只在创建时完整展示。
-- 管理员（Keycloak groups 包含配置的 `admin_group`）可查看所有用户的 Key 和用量，并停用 Key。
+- 管理员可查看所有用户的 Key 和用量，并停用 Key。谁是管理员见下方技术决策。
 - 转发模块认证 lgw Key 后转发请求，只统计 Token（总输入、总输出、缓存命中），不限额、不计费、
 不保存请求内容。
 - 上游：DeepSeek `/chat/completions`（第一阶段），AWS Bedrock（第三阶段）。
@@ -21,7 +21,7 @@ Key、供应商、模型分组。
 | 仓库     | 单仓库：`backend/`（admin、proxy 两个 Flask app 共享 `lgw` 包）、`frontend/`、`deploy/`    |
 | 转发     | Flask + gunicorn gevent worker + httpx 流式转发；本地开发（WSL）同样用 gunicorn            |
 | 登录     | Authlib + Flask 签名会话 cookie，不依赖 Redis                                        |
-| 管理员    | Keycloak groups 包含配置项 `oidc.admin_group`                                     |
+| 管理员    | Keycloak userinfo 的 `groups`，子串匹配 `oidc.admin_group`。细节见阶段 2 计划        |
 | 工具     | uv + `pyproject.toml`，ruff（格式化、PEP8、import 排序、numpy docstring），pylint        |
 | 规范     | PEP8，行宽 79，docstring 采用 numpy 格式，提交信息遵循 Conventional Commits                 |
 | 前端     | Vue 3 + Vite + TypeScript + Element Plus                                     |
@@ -59,7 +59,7 @@ deploy/                      # 阶段 4：Dockerfile、k8s 清单
 不自建 Nginx，也不引入新的网络组件。admin、proxy 各用一个 ClusterIP Service，通过公司已有的
 Ingress Controller 暴露，TLS 由 cert-manager 签发：
 
-- admin app 同时托管前端构建产物，页面在 `/console`，接口在 `/api/`，二者同源，避免 CORS 和跨域 cookie 问题。会话 cookie 的 Path 限于 `/console` 和 `/api`。开发时由 Vite dev server 把 `/api` 代理到 admin，生产构建的 base 为 `/console/`。
+- admin app 同时托管前端构建产物，页面在 `/console`，接口在 `/api/`，二者同源，避免 CORS 和跨域 cookie 问题。会话 cookie 只有一个 Path，值为 `/api`：浏览器只在 `/api` 及其子路径上发送它。`/console` 的页面通过这些接口获知登录态。阶段 4 与 proxy 共用域名时，根路径上的调用因此不会带上这张 cookie。开发时由 Vite dev server 把 `/api` 代理到 admin，生产构建的 base 为 `/console/`。
 - proxy app 通过 Ingress 对外提供 `/`。调用方的 Base URL 是主机根，本机为 `http://127.0.0.1:8000`。调用方是 SDK / curl 等非浏览器客户端，不涉及 CORS 和 cookie。
 - Ingress Controller 为 k8s 社区的 Ingress-Nginx（`ingressClassName: nginx`，不是 nginx 社区的
 NGINX Ingress Controller，注解按前者文档编写），仍是 SSE 链路上的一层反向代理，proxy 的
@@ -166,7 +166,7 @@ gunicorn gevent worker 启动。
 
 ### 阶段 1：本地转发和记录（SQLite）
 
-详细计划见 [stage1-plan.md](stage1-plan.md)。
+详细计划见 [../completed/stage1-plan.md](../completed/stage1-plan.md)。
 
 1. `db.py`、`models.py`、`keys.py`，提供 CLI：`flask --app ... init-db`、`create-key`（登录
   完成前用于发 Key，之后保留为运维工具）。
@@ -181,22 +181,16 @@ gunicorn gevent worker 启动。
 
 ### 阶段 2：登录和 Key 管理（SQLite）
 
-1. admin：Authlib OIDC 登录 / 回调 / 登出，首次登录写入 `users`。
-2. API（RESTful，错误返回 `{"message": ...}`，与参考项目一致）：
-  - `GET/POST /api/keys`、`PATCH /api/keys/<id>`（停用）
-  - `GET /api/usage?start=&end=&key_ids=&providers=&models=&group_by=`：筛选条件可组合，
-  多值用逗号分隔，省略表示不限；`group_by` 取 `day`、`key`、`provider`、`model` 的任意组合
-  （默认 `day,key`）。每行返回分组字段、请求数和三项 Token 之和，并按 `usage_source` 分别
-  给出 `estimated` / `unknown` 的请求数，便于判断数据可信度。
-  - `GET /api/usage/filters`：返回可选的供应商和模型。供应商为当前配置与历史记录中出现过的
-  名称的并集（已删除的供应商仍可查历史）；模型为 `requests` 中出现过的值。普通用户只看到
-  自己 Key 下的模型。
-  - 管理员：`GET /api/admin/keys`、`GET /api/admin/usage`（参数同上，`group_by` 另可
-  取 `user`）、停用任意 Key
-3. 前端挂在 `/console`：登录态、Key 列表 / 创建（一次性展示）/ 停用、用量查询、管理员视图。
+详细计划见 [stage2-plan.md](stage2-plan.md)。
 
-验收：用测试 Keycloak 登录，完成创建 Key、调用、查询用量全流程；普通用户无法访问
-其他用户数据。
+1. admin：Authlib OIDC 登录、回调、登出。登出同时结束 Keycloak 会话。登录写入或更新 `users`。
+2. Key 与用量 API。用量按 `started_at` 筛选，按 Asia/Shanghai 的日历日分组，不含
+   `in_progress`。普通用户查询他人的 Key 得到 403。管理员停用任意 Key 使用
+   `PATCH /api/keys/<id>`。
+3. 前端挂在 `/console`：登录态、Key 列表 / 创建 / 停用、用量查询、管理员视图。
+
+验收：用已有测试 realm 的独立客户端登录，完成创建 Key、调用、查询用量；管理员与普通用户的
+`groups` 区分正确；登出后再次登录会回到 Keycloak 登录页；普通用户无法查看、停用或统计他人数据。
 
 ### 阶段 3：AWS Bedrock
 
