@@ -14,7 +14,7 @@ from lgw.proxy.providers.deepseek import (
 
 def test_user_id_is_replaced_and_stream_options_stay():
     body = {
-        "model": "deepseek-chat",
+        "model": "deepseek-flash",
         "user_id": "from-client",
         "stream_options": {"include_usage": True},
         "base_url": "http://127.0.0.1",

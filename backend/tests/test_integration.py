@@ -87,37 +87,6 @@ def gateway(tmp_path_factory):
     }
     config_path = root / "config.json"
     config_path.write_text(json.dumps(config))
-    app = create_app(config)
-    Base.metadata.create_all(app.extensions["lgw_engine"])
-    raw_key = generate_key()
-    with app.extensions["lgw_sessions"]() as session:
-        session.add(User(sub="user-1", username="alice", email=None))
-        session.flush()
-        session.add(
-            ApiKey(
-                user_sub="user-1",
-                name="laptop",
-                key_hash=hash_key(raw_key),
-                key_hint=key_hint(raw_key),
-                created_at=utcnow(),
-                last_used_at=None,
-                status=KeyStatus.ACTIVE,
-            )
-        )
-        disabled = generate_key()
-        session.add(
-            ApiKey(
-                user_sub="user-1",
-                name="old",
-                key_hash=hash_key(disabled),
-                key_hint=key_hint(disabled),
-                created_at=utcnow(),
-                last_used_at=None,
-                status=KeyStatus.DISABLED,
-            )
-        )
-        session.commit()
-    app.extensions["lgw_http"].close()
     env = {
         "PATH": __import__("os").environ.get("PATH", ""),
         "FAKE_UPSTREAM_STATE": str(state),
@@ -140,13 +109,19 @@ def gateway(tmp_path_factory):
         env,
         upstream_log,
     )
-    proxy_log = root / "proxy.log"
-    proxy_env = dict(env)
-    proxy_env["CONFIG_FILE_PATH"] = str(config_path)
+    proxy = None
+    proxy_file = None
     try:
         _wait(
             f"http://127.0.0.1:{upstream_port}/healthz", upstream, upstream_log
         )
+        app = create_app(config)
+        Base.metadata.create_all(app.extensions["lgw_engine"])
+        raw_key, disabled = _seed_keys(app)
+        app.extensions["lgw_http"].close()
+        proxy_log = root / "proxy.log"
+        proxy_env = dict(env)
+        proxy_env["CONFIG_FILE_PATH"] = str(config_path)
         proxy, proxy_file = _spawn(
             [
                 sys.executable,
@@ -165,6 +140,8 @@ def gateway(tmp_path_factory):
         )
         _wait(f"http://127.0.0.1:{proxy_port}/healthz", proxy, proxy_log)
     except Exception:
+        if proxy is not None:
+            _stop(proxy, proxy_file)
         _stop(upstream, upstream_file)
         raise
     base = f"http://127.0.0.1:{proxy_port}"
@@ -186,8 +163,49 @@ def gateway(tmp_path_factory):
         _stop(upstream, upstream_file)
 
 
-def _model():
-    return "m" + uuid4().hex[:10]
+_MODEL = "deepseek-flash"
+
+
+def _seed_keys(app):
+    raw_key = generate_key()
+    disabled = generate_key()
+    with app.extensions["lgw_sessions"]() as session:
+        session.add(User(sub="user-1", username="alice", email=None))
+        session.flush()
+        session.add(
+            ApiKey(
+                user_sub="user-1",
+                name="laptop",
+                key_hash=hash_key(raw_key),
+                key_hint=key_hint(raw_key),
+                created_at=utcnow(),
+                last_used_at=None,
+                status=KeyStatus.ACTIVE,
+            )
+        )
+        session.add(
+            ApiKey(
+                user_sub="user-1",
+                name="old",
+                key_hash=hash_key(disabled),
+                key_hint=key_hint(disabled),
+                created_at=utcnow(),
+                last_used_at=None,
+                status=KeyStatus.DISABLED,
+            )
+        )
+        session.commit()
+    return raw_key, disabled
+
+
+def _max_id(database_url):
+    engine = create_engine_from_url(database_url)
+    try:
+        with Session(engine) as session:
+            value = session.scalar(select(func.max(Request.id)))
+        return 0 if value is None else value
+    finally:
+        engine.dispose()
 
 
 def _record(database_url, model):
@@ -210,11 +228,33 @@ def _record(database_url, model):
         engine.dispose()
 
 
-def _wait_record(database_url, model):
+def _record_after(database_url, after_id):
+    engine = create_engine_from_url(database_url)
+    try:
+        with Session(engine) as session:
+            row = session.scalars(
+                select(Request)
+                .where(Request.id > after_id)
+                .order_by(Request.id)
+            ).one_or_none()
+            if row is None:
+                return None
+            return SimpleNamespace(
+                status=row.status,
+                usage_source=row.usage_source,
+                input_tokens=row.input_tokens,
+                output_tokens=row.output_tokens,
+                cache_hit_tokens=row.cache_hit_tokens,
+            )
+    finally:
+        engine.dispose()
+
+
+def _wait_after(database_url, after_id):
     deadline = time.time() + 5
     found = None
     while time.time() < deadline:
-        found = _record(database_url, model)
+        found = _record_after(database_url, after_id)
         if found is not None and found.status != "in_progress":
             return found
         time.sleep(0.05)
@@ -230,10 +270,10 @@ def _count(database_url):
         engine.dispose()
 
 
-def _post(gateway, mode, *, stream=False, model=None, extra=None):
-    model = model or _model()
+def _post(gateway, mode, *, stream=False, extra=None):
+    after_id = _max_id(gateway.database_url)
     body = {
-        "model": model,
+        "model": _MODEL,
         "messages": [{"role": "user", "content": "hello"}],
         "test_mode": mode,
     }
@@ -246,13 +286,13 @@ def _post(gateway, mode, *, stream=False, model=None, extra=None):
         headers={"Authorization": f"Bearer {gateway.key}"},
         json=body,
     )
-    return model, response
+    return after_id, response
 
 
 def test_nonstream_reports_usage(gateway):
-    model, response = _post(gateway, "nonstream")
+    after_id, response = _post(gateway, "nonstream")
     assert response.status_code == 200
-    record = _record(gateway.database_url, model)
+    record = _record_after(gateway.database_url, after_id)
     assert record.status == "completed"
     assert record.usage_source == "reported"
     assert (
@@ -271,14 +311,14 @@ def test_nonstream_reports_usage(gateway):
     [("stream", usage_events(False)), ("stream_include", usage_events(True))],
 )
 def test_stream_bytes_match_upstream(gateway, mode, events):
-    model = _model()
+    after_id = _max_id(gateway.database_url)
     expected = b"".join(events)
     with gateway.client.stream(
         "POST",
         f"{gateway.base}/v1/chat/completions",
         headers={"Authorization": f"Bearer {gateway.key}"},
         json={
-            "model": model,
+            "model": _MODEL,
             "stream": True,
             "messages": [{"role": "user", "content": "hello"}],
             "test_mode": mode,
@@ -287,19 +327,19 @@ def test_stream_bytes_match_upstream(gateway, mode, events):
         assert response.status_code == 200
         body = b"".join(response.iter_bytes())
     assert body == expected
-    record = _wait_record(gateway.database_url, model)
+    record = _wait_after(gateway.database_url, after_id)
     assert record.status == "completed"
     assert record.usage_source == "reported"
 
 
 def test_stream_tools_bytes_match(gateway):
-    model = _model()
+    after_id = _max_id(gateway.database_url)
     with gateway.client.stream(
         "POST",
         f"{gateway.base}/v1/chat/completions",
         headers={"Authorization": f"Bearer {gateway.key}"},
         json={
-            "model": model,
+            "model": _MODEL,
             "stream": True,
             "messages": [{"role": "user", "content": "hello"}],
             "test_mode": "stream_tools",
@@ -307,20 +347,20 @@ def test_stream_tools_bytes_match(gateway):
     ) as response:
         body = b"".join(response.iter_bytes())
     assert body == b"".join(tool_events())
-    record = _wait_record(gateway.database_url, model)
+    record = _wait_after(gateway.database_url, after_id)
     assert record.status == "completed"
     assert record.usage_source == "reported"
 
 
 def test_client_disconnect_closes_upstream(gateway):
-    model = _model()
+    after_id = _max_id(gateway.database_url)
     state_key = uuid4().hex
     with gateway.client.stream(
         "POST",
         f"{gateway.base}/v1/chat/completions",
         headers={"Authorization": f"Bearer {gateway.key}"},
         json={
-            "model": model,
+            "model": _MODEL,
             "stream": True,
             "messages": [{"role": "user", "content": "hello"}],
             "test_mode": "stream_slow",
@@ -329,7 +369,7 @@ def test_client_disconnect_closes_upstream(gateway):
     ) as response:
         assert response.status_code == 200
         next(response.iter_bytes())
-    record = _wait_record(gateway.database_url, model)
+    record = _wait_after(gateway.database_url, after_id)
     assert record.status == "client_interrupted"
     assert record.usage_source == "estimated"
     minimum = estimate_tokens({}, _TOOL_TEXT)[1]
@@ -343,43 +383,43 @@ def test_client_disconnect_closes_upstream(gateway):
 
 
 def test_upstream_cut_sends_an_error_event(gateway):
-    model, response = _post(gateway, "stream_cut", stream=True)
+    after_id, response = _post(gateway, "stream_cut", stream=True)
     assert response.status_code == 200
     assert b"upstream_interrupted" in response.content
     assert b"[DONE]" not in response.content
-    record = _wait_record(gateway.database_url, model)
+    record = _wait_after(gateway.database_url, after_id)
     assert record.status == "upstream_interrupted"
     assert record.usage_source == "estimated"
 
 
 def test_stream_without_done_is_interrupted(gateway):
-    model, response = _post(gateway, "stream_no_done", stream=True)
+    after_id, response = _post(gateway, "stream_no_done", stream=True)
     assert b'"code": "upstream_interrupted"' in response.content
-    record = _record(gateway.database_url, model)
+    record = _record_after(gateway.database_url, after_id)
     assert record.status == "upstream_interrupted"
 
 
 def test_read_timeout_is_interrupted(gateway):
-    model, response = _post(gateway, "stream_hang", stream=True)
+    after_id, response = _post(gateway, "stream_hang", stream=True)
     assert b"upstream_interrupted" in response.content
-    record = _wait_record(gateway.database_url, model)
+    record = _wait_after(gateway.database_url, after_id)
     assert record.status == "upstream_interrupted"
     assert record.usage_source == "estimated"
 
 
 def test_stream_without_usage_is_estimated(gateway):
-    model, response = _post(gateway, "stream_no_usage", stream=True)
+    after_id, response = _post(gateway, "stream_no_usage", stream=True)
     assert response.content.endswith(b"data: [DONE]")
-    record = _record(gateway.database_url, model)
+    record = _record_after(gateway.database_url, after_id)
     assert record.status == "completed"
     assert record.usage_source == "estimated"
     assert record.output_tokens == estimate_tokens({}, "hi")[1]
 
 
 def test_invalid_json_event_is_forwarded(gateway):
-    model, response = _post(gateway, "stream_bad_json", stream=True)
+    after_id, response = _post(gateway, "stream_bad_json", stream=True)
     assert response.content.startswith(b"data: not-json\n\n")
-    record = _record(gateway.database_url, model)
+    record = _record_after(gateway.database_url, after_id)
     assert record.status == "completed"
     assert record.usage_source == "reported"
 
@@ -392,11 +432,11 @@ def test_invalid_json_event_is_forwarded(gateway):
     ],
 )
 def test_upstream_account_errors_are_hidden(gateway, mode, code):
-    model, response = _post(gateway, mode)
+    after_id, response = _post(gateway, mode)
     assert response.status_code == 502
     assert response.json()["error"]["code"] == code
     assert "account-secret" not in response.text
-    record = _record(gateway.database_url, model)
+    record = _record_after(gateway.database_url, after_id)
     assert record.status == "upstream_error"
     assert record.usage_source == "reported"
     assert record.input_tokens == 0
@@ -404,13 +444,13 @@ def test_upstream_account_errors_are_hidden(gateway, mode, code):
 
 @pytest.mark.parametrize("mode", ["status-400", "status-429", "status-500"])
 def test_upstream_status_is_forwarded(gateway, mode):
-    model, response = _post(gateway, mode)
+    after_id, response = _post(gateway, mode)
     code = int(mode.split("-", 1)[1])
     assert response.status_code == code
     assert response.content == f"status-{code}".encode()
     if code == 429:
         assert response.headers["Retry-After"] == "7"
-    record = _record(gateway.database_url, model)
+    record = _record_after(gateway.database_url, after_id)
     assert record.status == "upstream_error"
 
 
@@ -467,15 +507,14 @@ def test_openai_sdk_streams_and_raises_on_error_events(gateway):
     client = OpenAI(
         base_url=f"{gateway.base}/v1", api_key=gateway.key, timeout=10
     )
-    model = _model()
     reply = client.chat.completions.create(
-        model=model,
+        model=_MODEL,
         messages=[{"role": "user", "content": "hello"}],
         extra_body={"test_mode": "nonstream"},
     )
     assert reply.choices[0].message.content == "ok"
     streamed = client.chat.completions.create(
-        model=_model(),
+        model=_MODEL,
         messages=[{"role": "user", "content": "hello"}],
         stream=True,
         extra_body={"test_mode": "stream"},
@@ -485,7 +524,7 @@ def test_openai_sdk_streams_and_raises_on_error_events(gateway):
     with pytest.raises(APIError):
         list(
             client.chat.completions.create(
-                model=_model(),
+                model=_MODEL,
                 messages=[{"role": "user", "content": "hello"}],
                 stream=True,
                 extra_body={"test_mode": "stream_no_done"},

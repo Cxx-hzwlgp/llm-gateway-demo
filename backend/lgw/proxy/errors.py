@@ -61,6 +61,22 @@ def invalid_json():
     )
 
 
+def model_not_found():
+    """Return the 404 response for a model that is not in the catalog.
+
+    Returns
+    -------
+    tuple
+        Flask response and status code.
+    """
+    return error_response(
+        "model not found",
+        "invalid_request_error",
+        "model_not_found",
+        404,
+    )
+
+
 def invalid_model():
     """Return the 400 response for a missing or invalid model name.
 

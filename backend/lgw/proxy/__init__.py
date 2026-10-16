@@ -7,10 +7,11 @@ from lgw.cli import register_cli
 from lgw.config import (
     database_url,
     load_config,
+    load_providers,
     proxy_settings,
-    selected_provider,
 )
 from lgw.db import create_engine_from_url, create_session_factory
+from lgw.proxy.catalog import load_catalog
 from lgw.proxy.estimate import load_encoder
 from lgw.proxy.routes import register_routes
 
@@ -31,15 +32,22 @@ def create_app(config=None):
     app = Flask(__name__)
     loaded = config if config is not None else load_config()
     app.config["LGW"] = loaded
-    provider = selected_provider(loaded)
+    providers = load_providers(loaded)
     settings = proxy_settings(loaded)
-    engine = create_engine_from_url(database_url(loaded))
+    db_url = database_url(loaded)
+    client = _upstream_client(settings)
+    try:
+        catalog = load_catalog(client, providers)
+        load_encoder()
+    except Exception:
+        client.close()
+        raise
+    engine = create_engine_from_url(db_url)
     app.extensions["lgw_engine"] = engine
     app.extensions["lgw_sessions"] = create_session_factory(engine)
-    app.extensions["lgw_provider"] = provider
+    app.extensions["lgw_catalog"] = catalog
     app.extensions["lgw_proxy"] = settings
-    app.extensions["lgw_http"] = _upstream_client(settings)
-    load_encoder()
+    app.extensions["lgw_http"] = client
     register_cli(app)
     register_routes(app)
 

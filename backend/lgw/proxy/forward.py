@@ -13,13 +13,13 @@ from lgw.proxy.errors import (
     gateway_error_response,
     invalid_json,
     invalid_model,
+    model_not_found,
     passthrough_headers,
 )
 from lgw.proxy.estimate import estimate_tokens, output_text_from_response
 from lgw.proxy.providers.deepseek import (
     UsageParseError,
     chat_completions_url,
-    models_url,
     outbound_headers,
     parse_usage,
     rewrite_body,
@@ -45,7 +45,8 @@ _SEND_TIMEOUTS = (
 def forward_chat(api_key):
     """Validate the chat request and forward it.
 
-    Invalid bodies are rejected before a request record is inserted.
+    Invalid bodies and unknown models are rejected before a request
+    record is inserted.
 
     Parameters
     ----------
@@ -67,7 +68,9 @@ def forward_chat(api_key):
         or len(model) > MODEL_MAX_LENGTH
     ):
         return invalid_model()
-    provider = current_app.extensions["lgw_provider"]
+    provider = current_app.extensions["lgw_catalog"].provider_for(model)
+    if provider is None:
+        return model_not_found()
     sessions = current_app.extensions["lgw_sessions"]
     try:
         record_id = start_request(
@@ -101,7 +104,7 @@ def _json_object():
 
 
 def _call_upstream(record_id, api_key, provider, body, stream):
-    payload = rewrite_body(body, api_key.user_sub)
+    payload = _outbound_body(body, api_key.user_sub)
     headers = outbound_headers(provider.api_key, request.headers, stream)
     client = current_app.extensions["lgw_http"]
     upstream_request = client.build_request(
@@ -233,39 +236,30 @@ def _gateway_outcome():
 
 
 def forward_models():
-    """Forward ``GET /v1/models`` without writing a request record.
+    """Return the model catalog loaded at startup.
+
+    The response does not call upstream and does not include provider
+    names or outbound keys.
 
     Returns
     -------
-    flask.Response or tuple
-        Upstream body on success, or a mapped error response.
+    flask.Response
+        OpenAI-style model list.
     """
-    provider = current_app.extensions["lgw_provider"]
-    client = current_app.extensions["lgw_http"]
-    headers = {"Authorization": f"Bearer {provider.api_key}"}
-    accept = request.headers.get("Accept")
-    if accept:
-        headers["Accept"] = accept
-    upstream_request = client.build_request(
-        "GET", models_url(provider.base_url), headers=headers
-    )
-    try:
-        upstream = client.send(upstream_request, stream=True)
-    except httpx.RequestError as exc:
-        return _send_failure(exc)[1]
-    try:
-        try:
-            payload = upstream.read()
-        except _READ_ERRORS:
-            return _interrupted(b"")[1]
-    finally:
-        upstream.close()
-    if upstream.status_code != 200:
-        return _upstream_status("models", upstream, payload)[1]
-    content_type = upstream.headers.get("content-type", "application/json")
+    catalog = current_app.extensions["lgw_catalog"]
+    data = [{"id": item["id"], "object": "model"} for item in catalog.models]
     return Response(
-        payload, status=200, headers={"Content-Type": content_type}
+        json.dumps({"object": "list", "data": data}),
+        status=200,
+        headers={"Content-Type": "application/json"},
     )
+
+
+def _outbound_body(body, user_sub):
+    model = body.get("model")
+    if isinstance(model, str) and model.startswith("deepseek"):
+        return rewrite_body(body, user_sub)
+    return body
 
 
 def _estimated_tokens(request_body, response_body):

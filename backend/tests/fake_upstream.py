@@ -68,6 +68,18 @@ def healthz():
     return {"status": "ok"}
 
 
+@app.get("/models")
+def models():
+    """Return the models the integration proxy is allowed to route."""
+    return {
+        "object": "list",
+        "data": [
+            {"id": "deepseek-flash", "object": "model"},
+            {"id": "deepseek-v4-pro", "object": "model"},
+        ],
+    }
+
+
 @app.post("/chat/completions")
 def chat():
     """Return the behavior selected by ``test_mode``."""

@@ -75,9 +75,14 @@ Ingress Controller 暴露，TLS 由 cert-manager 签发：
 
 - `api_keys.name`、`key_hint`：界面要求展示 Key 名称和掩码文本（如 `lgw-ab12…yz89`）。
 - `requests.ended_at`、`provider`、`model`：区分上游和模型，便于排查与按模型统计。
-  - `provider` 存供应商名，即配置中 `providers` 下的键名，由网关按路由选定，不来自客户端。
-    同一类型可以配置多个供应商（如两个 DeepSeek 账号），用 `type` 字段指定适配器：
-    `"providers": {"deepseek": {"type": "deepseek", "base_url": ..., "api_key": ...}}`。
+  - `provider` 存供应商名，即配置中 `providers` 下的键名，由网关按模型表选定，不来自客户端。
+    每家供应商只配置 `base_url` 和 `api_key`：
+    `"providers": {"deepseek": {"base_url": ..., "api_key": ...}}`。
+    进程启动时用各供应商自己的 Key 请求 `GET {base_url}/models`，把 `data[].id` 收成模型表：
+    键是模型名，值是列出该模型的供应商名称，按配置顺序排列。同一模型出现在多家时都保留；
+    转发时用名单里的第一家，供应商选择以后再做。列表失败或格式不对时进程不启动。
+    模型表不写回配置、不落库。对外的 `GET /v1/models` 返回这张表里的模型名，每个名字只出现一次，
+    不带供应商名和出站 Key。
     供应商名是用量记录的稳定标识，限定为 `[a-z0-9-]+`、最长 64；改名等于新增一个供应商，
     旧记录保留旧名。不建供应商表，配置文件就是唯一来源。
   - `model` 存客户端请求的模型名，原样保存、区分大小写。上游报错或中断时也能记录，与用户
@@ -111,8 +116,9 @@ Key 格式为 `lgw-` + `secrets.token_urlsafe(32)`，库中只存 SHA-256。Key 
 2. **usage 获取**：据 DeepSeek 文档，无论是否设置 `stream_options.include_usage`，`[DONE]`
   前的最后一个 chunk（含 `finish_reason`）都带有整个请求的 `usage`，不存在单独的 usage chunk；
   设置为 `true` 时其余 chunk 的 `usage` 为 `null`。因此网关不注入参数、不修改响应，事件原样转发。
-3. **user_id**：所有用户共用同一个出站 DeepSeek Key，请求体中的 `user_id` 一律覆盖为 lgw
-  用户的 `sub`，供 DeepSeek 做内容安全、KVCache 隔离和调度隔离。DeepSeek 要求匹配
+3. **user_id**：模型名以 `deepseek` 开头时，请求体中的 `user_id` 覆盖为 lgw
+  用户的 `sub`，供 DeepSeek 做内容安全、KVCache 隔离和调度隔离。其他模型不添加、不改写
+  `user_id`。DeepSeek 要求匹配
   `[a-zA-Z0-9\-_]+`、最长 512、不含隐私信息；Keycloak `sub` 为 UUID，满足要求，不能用
   username / email。其余参数原样转发。
 4. **估算**：只在中断且没有收到 usage 时使用，场景少、准确度要求不高。所有模型共用通用分词器
@@ -153,7 +159,8 @@ gunicorn gevent worker 启动。
 
 1. `db.py`、`models.py`、`keys.py`，提供 CLI：`flask --app ... init-db`、`create-key`（登录
   完成前用于发 Key，之后保留为运维工具）。
-2. proxy：`POST /v1/chat/completions`（流式与非流式）、`GET /v1/models` 透传。
+2. proxy：`POST /v1/chat/completions`（流式与非流式）。`model` 必须在启动时的模型表里，
+  否则 404，不写 `requests`、不访问上游。`GET /v1/models` 返回该表，不在请求时再访问上游。
 3. DeepSeek provider：请求改写、usage 解析。
 4. 中断估算与超时清扫命令。
 5. 测试：用本地假上游（返回 SSE、可中途断开）覆盖四种状态；pytest + respx 覆盖解析逻辑。
@@ -185,8 +192,9 @@ gunicorn gevent worker 启动。
 先调研再定方案：客户端以何种协议访问（OpenAI 兼容格式由网关翻译为 Converse，或透传
 Bedrock 原生接口），以及流式响应中 usage 的获取方式。中断时的估算沿用通用分词器。
 
-- 确定多个供应商时的路由方式（按模型名映射还是按路径区分），路由结果决定
-  `requests.provider`，客户端不能直接指定供应商名以外的上游信息。
+- OpenAI 兼容供应商已按启动时的模型表路由：模型名对应供应商名称列表，当前固定用第一家，
+  `requests.provider` 记这一家。客户端不能直接指定供应商。多家之间的选择以后再做。
+  Bedrock 不是这套 `/models` + `/chat/completions` 接口，接入方式仍待公司流程结束后再定。
 - 优先选择不需要协议翻译的方案。跨协议翻译要处理消息、工具调用、推理内容、结束原因和
   流式事件，不只是字段改名，出错时请求往往仍能成功，只是工具调用或 usage 悄悄出错。
 - 访问 Bedrock 原生接口需要 SigV4 签名，交给 AWS SDK 完成，不自行拼接或修改已签名的请求。

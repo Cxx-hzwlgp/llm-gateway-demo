@@ -13,15 +13,14 @@ from lgw.models import (
     UsageSource,
     utcnow,
 )
-from lgw.proxy import create_app
-from tests.support import proxy_config
+from tests.support import open_app, proxy_config
 from tests.test_forward import _insert_key
 
 
 def test_sweep_marks_only_stale_in_progress(tmp_path):
     config = proxy_config(f"sqlite:///{tmp_path / 'lgw.db'}")
     config["proxy"] = {"max_request_seconds": 60}
-    app = create_app(config)
+    app = open_app(config)
     Base.metadata.create_all(app.extensions["lgw_engine"])
     _insert_key(app)
     sessions = app.extensions["lgw_sessions"]
@@ -66,7 +65,7 @@ def test_sweep_marks_only_stale_in_progress(tmp_path):
 
 def test_mark_stale_skips_rows_that_already_finished(tmp_path):
     config = proxy_config(f"sqlite:///{tmp_path / 'lgw.db'}")
-    app = create_app(config)
+    app = open_app(config)
     Base.metadata.create_all(app.extensions["lgw_engine"])
     _insert_key(app)
     sessions = app.extensions["lgw_sessions"]

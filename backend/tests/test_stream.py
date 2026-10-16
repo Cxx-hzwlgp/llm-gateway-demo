@@ -90,7 +90,7 @@ def test_stream_bytes_match_and_usage_is_reported(tmp_path):
         app,
         raw_key,
         {
-            "model": "deepseek-chat",
+            "model": "deepseek-flash",
             "stream": True,
             "user_id": "from-client",
             "stream_options": {"include_usage": True},

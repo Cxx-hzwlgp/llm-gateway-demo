@@ -7,9 +7,9 @@ import respx
 from sqlalchemy import select
 
 from lgw.keys import generate_key, hash_key, key_hint
-from lgw.models import ApiKey, KeyStatus, Request, User, utcnow
+from lgw.models import ApiKey, Base, KeyStatus, Request, User, utcnow
 from lgw.proxy.estimate import estimate_tokens
-from tests.support import create_proxy_app
+from tests.support import create_proxy_app, open_app, proxy_config
 
 _URL = "https://upstream.test/chat/completions"
 
@@ -79,7 +79,7 @@ def test_nonstream_completion_reports_usage_and_hides_client_headers(tmp_path):
             app,
             raw_key,
             {
-                "model": "deepseek-chat",
+                "model": "deepseek-flash",
                 "user_id": "from-client",
                 "stream_options": {"include_usage": True},
                 "base_url": "http://127.0.0.1/secret",
@@ -99,7 +99,7 @@ def test_nonstream_completion_reports_usage_and_hides_client_headers(tmp_path):
     assert record.status == "completed"
     assert record.usage_source == "reported"
     assert record.provider == "deepseek"
-    assert record.model == "deepseek-chat"
+    assert record.model == "deepseek-flash"
     assert (
         record.input_tokens,
         record.output_tokens,
@@ -133,6 +133,80 @@ def test_missing_usage_is_completed_and_estimated(tmp_path, caplog):
         record.cache_hit_tokens,
     ) == estimate_tokens(body, "world")
     assert "completed without usage" in caplog.text
+    app.extensions["lgw_http"].close()
+
+
+def test_shared_model_is_sent_to_the_first_provider(tmp_path):
+    config = proxy_config(f"sqlite:///{tmp_path / 'lgw.db'}")
+    config["providers"]["other"] = {
+        "base_url": "https://other.test",
+        "api_key": "sk-other",
+    }
+    app = open_app(
+        config,
+        {
+            "https://upstream.test": ("m",),
+            "https://other.test": ("m",),
+        },
+    )
+    Base.metadata.create_all(app.extensions["lgw_engine"])
+    raw_key = _insert_key(app)
+    seen = {}
+
+    def _capture(upstream_request):
+        seen["authorization"] = upstream_request.headers["authorization"]
+        seen["url"] = str(upstream_request.url)
+        return httpx.Response(200, json={"choices": []})
+
+    with respx.mock:
+        route = respx.post(_URL).mock(side_effect=_capture)
+        response = _post(app, raw_key, {"model": "m", "user_id": "client"})
+    assert response.status_code == 200
+    assert route.called
+    assert seen["authorization"] == "Bearer sk-upstream"
+    assert seen["url"] == _URL
+    assert _records(app)[0].provider == "deepseek"
+    app.extensions["lgw_http"].close()
+
+
+def test_unknown_model_does_not_call_upstream(tmp_path):
+    app = create_proxy_app(tmp_path)
+    raw_key = _insert_key(app)
+    with respx.mock:
+        route = respx.post(_URL).mock(return_value=httpx.Response(200))
+        missing = _post(app, raw_key, {"model": "missing-model"})
+    assert missing.status_code == 404
+    assert missing.get_json()["error"]["code"] == "model_not_found"
+    assert not route.called
+    assert _records(app) == []
+    app.extensions["lgw_http"].close()
+
+
+def test_user_id_follows_the_deepseek_prefix(tmp_path):
+    app = create_proxy_app(tmp_path)
+    raw_key = _insert_key(app)
+    seen = []
+
+    def _capture(upstream_request):
+        seen.append(json.loads(upstream_request.content))
+        return httpx.Response(200, json={"choices": []})
+
+    with respx.mock:
+        respx.post(_URL).mock(side_effect=_capture)
+        kept = _post(
+            app,
+            raw_key,
+            {"model": "m", "user_id": "from-client"},
+        )
+        replaced = _post(
+            app,
+            raw_key,
+            {"model": "deepseek-v4-pro", "user_id": "from-client"},
+        )
+    assert kept.status_code == 200
+    assert seen[0]["user_id"] == "from-client"
+    assert replaced.status_code == 200
+    assert seen[1]["user_id"] == "user-1"
     app.extensions["lgw_http"].close()
 
 

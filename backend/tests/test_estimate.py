@@ -16,7 +16,7 @@ def _count(text):
 def test_messages_include_text_parts_tools_and_calls():
     tools = [{"type": "function", "function": {"name": "lookup"}}]
     body = {
-        "model": "deepseek-chat",
+        "model": "deepseek-flash",
         "messages": [
             {
                 "role": "user",

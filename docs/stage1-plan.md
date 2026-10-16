@@ -32,7 +32,6 @@ lgw Key 认证通过后，把 OpenAI 兼容请求转发到 DeepSeek，支持流�
   },
   "providers": {
     "deepseek": {
-      "type": "deepseek",
       "base_url": "https://api.deepseek.com",
       "api_key": ""
     }
@@ -40,10 +39,12 @@ lgw Key 认证通过后，把 OpenAI 兼容请求转发到 DeepSeek，支持流�
 }
 ```
 
-- `providers` 的键名是供应商名，写入 `requests.provider`；`type` 决定使用的适配器
-  （阶段 1 只有 `deepseek`）。规则见 dev-plan 数据模型。
-- 阶段 1 只支持配置一个供应商，`create_app` 校验：数量不为 1、名称不符合格式或 `type` 未知时
-  启动失败。多个供应商时如何路由（按模型名还是按路径）在阶段 3 决定。
+- `providers` 的键名是供应商名。每家只有 `base_url` 和 `api_key`。可以配置多家。
+  名称不符合格式、缺少 `base_url` 或 `api_key`、一家都没有时启动失败。
+- 启动时请求每家的 `GET {base_url}/models`。模型表的键是模型名，值是供应商名称列表，
+  按配置顺序排列。同一模型被多家列出时都保留，转发使用第一家。列表失败或格式不对时进程不启动。
+  聊天请求里的 `model` 不在表中时返回 404，不写 `requests`、不访问上游。
+  模型名以 `deepseek` 开头时才把 `user_id` 覆盖为用户 `sub`。
 
 - `upstream_read_timeout` 是两次读取之间的最大间隔，不是整个请求的时长。DeepSeek 在排队
   时会发送 keep-alive（流式为 `: keep-alive` 注释，非流式为空行），会重置该计时；排队超过
@@ -257,7 +258,8 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 
 ## `GET /v1/models`
 
-认证 lgw Key 后转发到上游 `/models`，原样返回。不写 `requests`。错误映射同上。
+认证 lgw Key 后返回启动时的模型表，每个模型名只出现一次，不带供应商名和出站 Key。
+不写 `requests`，不在这次请求里再访问上游。
 
 ## 测试
 
@@ -274,7 +276,9 @@ data: {"error": {"message": "upstream connection interrupted", "type": "upstream
 - `estimate.py`：messages 拼接（含数组形式的 `content`、`tool_calls`、`tools` 定义）、特殊
   token 字面量、空输出。
 - `recorder.py`：最终写入失败时只记日志、不抛异常。
-- 配置校验：供应商数量、名称格式、未知 `type`；`model` 缺失 / 非字符串 / 过长时返回 400。
+- 配置校验：至少一家供应商、名称格式、`base_url` 与 `api_key`；模型表拉取失败时启动失败。
+  同一模型可对应多家供应商，转发使用第一家。`model` 缺失 / 非字符串 / 过长时返回 400，
+  不在表中时返回 404。
   使用真实的 `o200k_base` 编码，测试环境需能下载或已缓存编码文件。
 
 ### 集成测试（真实进程）

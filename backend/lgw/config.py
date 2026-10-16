@@ -69,17 +69,15 @@ class ProxySettings:
 
 @dataclass(frozen=True)
 class ProviderSettings:
-    """The single upstream provider selected for this process."""
+    """One upstream provider configured for this process."""
 
     name: str
-    provider_type: str
     base_url: str
     api_key: str
 
 
 _PROVIDER_NAME = re.compile(r"[a-z0-9-]+")
 _PROVIDER_NAME_MAX = 64
-_KNOWN_PROVIDER_TYPES = {"deepseek"}
 
 
 def proxy_settings(config):
@@ -116,8 +114,8 @@ def proxy_settings(config):
     )
 
 
-def selected_provider(config):
-    """Return the only configured provider.
+def load_providers(config):
+    """Return the configured providers in declaration order.
 
     Parameters
     ----------
@@ -126,18 +124,22 @@ def selected_provider(config):
 
     Returns
     -------
-    ProviderSettings
-        Provider name, type, base URL and outbound API key.
+    tuple of ProviderSettings
+        Provider name, base URL and outbound API key.
 
     Raises
     ------
     ConfigurationError
-        The provider count, name or type is not valid for stage 1.
+        No provider is configured, or a name, base URL or API key is
+        invalid.
     """
     providers = config.get("providers")
-    if not isinstance(providers, dict) or len(providers) != 1:
-        raise ConfigurationError("exactly one provider is required")
-    name, spec = next(iter(providers.items()))
+    if not isinstance(providers, dict) or len(providers) < 1:
+        raise ConfigurationError("at least one provider is required")
+    return tuple(_provider(name, spec) for name, spec in providers.items())
+
+
+def _provider(name, spec):
     if (
         not isinstance(name, str)
         or len(name) > _PROVIDER_NAME_MAX
@@ -148,8 +150,6 @@ def selected_provider(config):
         )
     if not isinstance(spec, dict):
         raise ConfigurationError("provider settings must be an object")
-    if spec.get("type") not in _KNOWN_PROVIDER_TYPES:
-        raise ConfigurationError("unknown provider type")
     base_url = spec.get("base_url")
     api_key = spec.get("api_key")
     if not isinstance(base_url, str) or not base_url:
@@ -158,7 +158,6 @@ def selected_provider(config):
         raise ConfigurationError("provider api_key is required")
     return ProviderSettings(
         name=name,
-        provider_type=spec["type"],
         base_url=base_url.rstrip("/"),
         api_key=api_key,
     )

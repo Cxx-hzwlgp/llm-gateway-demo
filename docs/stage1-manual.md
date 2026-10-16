@@ -25,8 +25,11 @@ cp config.example.json config.json
 
 至少填写：
 
-- `providers.deepseek.api_key`：出站 DeepSeek Key。留空时进程启动失败。
-- `providers.deepseek.type` 必须是 `deepseek`。阶段 1 只能配置一个供应商。
+- `providers` 里至少一家供应商。键名是供应商名，每家要有 `base_url` 和 `api_key`。
+  `api_key` 留空时进程启动失败。
+- 加载应用时会用每家的 Key 请求 `{base_url}/models`，收成模型名到供应商名称列表的表。
+  列表失败或格式不对时进程不启动。`init-db`、`create-key`、`sweep` 和 gunicorn 都会加载应用，
+  因此同样会查这张表。同一个模型出现在多家时都保留，转发使用名单里的第一家。
 - `database.url` 默认 `sqlite:///lgw.db`，相对当前工作目录。
 
 `proxy` 里的超时可以先保持模板中的值。`upstream_read_timeout` 是两次读取之间的间隔，
@@ -42,8 +45,8 @@ uv run flask --app lgw.proxy create-key \
   --name laptop
 ```
 
-`create-key` 只把完整 Key 打到标准输出一次。`user-sub` 会作为 DeepSeek `user_id`，
-必须匹配 `[a-zA-Z0-9_-]+` 且不超过 512 字符。用户已存在时不会改用户名。
+`create-key` 只把完整 Key 打到标准输出一次。模型名以 `deepseek` 开头时，`user-sub`
+会作为上游 `user_id`。它必须匹配 `[a-zA-Z0-9_-]+` 且不超过 512 字符。用户已存在时不会改用户名。
 
 把打出来的 `lgw-...` 存好，下面记为 `$LGW_KEY`。
 
@@ -65,7 +68,7 @@ uv run gunicorn -k gevent -w 1 -b 127.0.0.1:8000 'lgw.proxy:create_app()'
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Authorization: Bearer $LGW_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 流式：
@@ -74,10 +77,11 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 curl -N http://127.0.0.1:8000/v1/chat/completions \
   -H "Authorization: Bearer $LGW_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}'
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"stream":true}'
 ```
 
-模型列表不写 `requests`：
+模型列表来自启动时加载的模型表，不写 `requests`，也不会在这次请求里再访问上游。
+表里没有的模型名调用 chat 时返回 404，`code` 为 `model_not_found`，不写 `requests`。
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/models \
@@ -93,13 +97,13 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="lgw-...")
 reply = client.chat.completions.create(
-    model="deepseek-chat",
+    model="deepseek-flash",
     messages=[{"role": "user", "content": "hi"}],
 )
 print(reply.choices[0].message.content)
 
 stream = client.chat.completions.create(
-    model="deepseek-chat",
+    model="deepseek-flash",
     messages=[{"role": "user", "content": "hi"}],
     stream=True,
 )
@@ -148,7 +152,7 @@ uv run flask --app lgw.proxy sweep
 | -------- | ---------------------------------- |
 | Base URL | `http://127.0.0.1:8000/v1`         |
 | API Key  | `create-key` 打印的 lgw Key          |
-| 模型名      | `deepseek-chat` 或 `deepseek-reasoner` |
+| 模型名      | `deepseek-flash` 或 `deepseek-v4-pro` |
 
 本机 `pi --help` 提供 `--provider`、`--model` 和 `--api-key`。自定义 base URL
 的配置项以当前 Pi 版本文档为准。Cline 选择 OpenAI Compatible provider，填上面三项。
